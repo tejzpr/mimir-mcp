@@ -1,0 +1,36 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Build artifacts
+bin/
+coverage.txt
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Documentation (not needed in image)
+docs/
+*.md
+!README.md
+
+# Test files
+tests/
+*_test.go
+
+# Development configs
+config.development.json
+mimir-with-env.sh
+
+# CI/CD
+.github/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore

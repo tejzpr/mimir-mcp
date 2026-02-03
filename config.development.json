@@ -1,0 +1,36 @@
+{
+  "server": {
+    "host": "localhost",
+    "port": 8080,
+    "tls": {
+      "enabled": false,
+      "cert_file": "",
+      "key_file": ""
+    }
+  },
+  "database": {
+    "type": "sqlite",
+    "sqlite_path": "~/.mimir/db/dev.db",
+    "postgres_dsn": ""
+  },
+  "auth": {
+    "type": "local"
+  },
+  "saml": {
+    "entity_id": "",
+    "acs_url": "",
+    "metadata_url": "",
+    "idp_metadata": "",
+    "certificate": "",
+    "private_key": "",
+    "provider": "okta"
+  },
+  "git": {
+    "default_branch": "main",
+    "sync_interval_minutes": 5
+  },
+  "security": {
+    "encryption_key": "",
+    "token_ttl_hours": 24
+  }
+}
