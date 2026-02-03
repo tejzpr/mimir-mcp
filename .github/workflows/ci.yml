@@ -50,7 +50,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        go-version: '1.24'
 
     - name: Cache Go modules
       uses: actions/cache@v4
@@ -87,7 +87,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        go-version: '1.24'
 
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v6
@@ -108,7 +108,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        go-version: '1.24'
 
     - name: Build
       run: make build
@@ -189,12 +189,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
-
-    - name: Install cross-compile dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu
+        go-version: '1.24'
 
     - name: Get version
       id: version
@@ -204,19 +199,20 @@ jobs:
       run: |
         mkdir -p dist
         
-        # Linux amd64 (with CGO for SQLite)
-        CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/mimir-linux-amd64 cmd/server/main.go
+        # All builds use CGO_ENABLED=0 - pure-Go SQLite via modernc.org/sqlite
+        # Linux amd64
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/mimir-linux-amd64 cmd/server/main.go
         
-        # Linux arm64 (with CGO for SQLite)
-        CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/mimir-linux-arm64 cmd/server/main.go
+        # Linux arm64
+        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/mimir-linux-arm64 cmd/server/main.go
         
-        # macOS amd64 (CGO disabled - use Docker for SQLite support)
+        # macOS amd64 (Intel)
         CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/mimir-darwin-amd64 cmd/server/main.go
         
-        # macOS arm64 / Apple Silicon (CGO disabled - use Docker for SQLite support)
+        # macOS arm64 (Apple Silicon)
         CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/mimir-darwin-arm64 cmd/server/main.go
         
-        # Windows amd64 (CGO disabled - use Docker for SQLite support)
+        # Windows amd64
         CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/mimir-windows-amd64.exe cmd/server/main.go
 
     - name: Create archives

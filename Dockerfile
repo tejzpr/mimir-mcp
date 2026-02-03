@@ -1,8 +1,8 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
-# Install git and build tools (gcc, musl-dev required for CGO/sqlite)
-RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
+# Install git for go-git operations and ca-certificates
+RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /app
 
@@ -13,8 +13,7 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the binary with CGO enabled (required for go-sqlite3)
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o /mimir cmd/server/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /mimir cmd/server/main.go
 
 # Runtime stage
 FROM alpine:3.19

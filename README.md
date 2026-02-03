@@ -35,7 +35,7 @@ Mimir is a Model Context Protocol (MCP) server that provides persistent, git-ver
 
 ## Requirements
 
-- **Go 1.23+** - For building from source
+- **Go 1.24+** - For building from source
 - **Git 2.x+** - Required for version-controlled memory storage (git must be in your PATH)
 
 ## Quick Start
@@ -87,7 +87,7 @@ Add to your MCP client config:
 
 Run Mimir directly using `go run` without installing - similar to `uvx` for Python or `npx` for Node.js.
 
-**Prerequisites:** Install Go 1.23+ [go.dev/dl](https://go.dev/dl/) and GIT in your PATH:
+**Prerequisites:** Install Go 1.24+ [go.dev/dl](https://go.dev/dl/) and Git in your PATH:
 
 ```bash
 # macOS (Homebrew)
