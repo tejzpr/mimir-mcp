@@ -83,7 +83,40 @@ Add to your MCP client config:
 }
 ```
 
-#### Option 2: Docker Container
+#### Option 2: Go Run
+
+Run Mimir directly using `go run` without installing - similar to `uvx` for Python or `npx` for Node.js.
+
+**Prerequisites:** Install Go 1.23+ [go.dev/dl](https://go.dev/dl/) and GIT in your PATH:
+
+```bash
+# macOS (Homebrew)
+brew install go git
+
+# Ubuntu/Debian
+sudo apt update && sudo apt install golang-go git
+
+# Windows (Chocolatey)
+choco install golang git
+```
+
+**MCP Client Config:**
+
+```json
+{
+  "mcpServers": {
+    "mimir": {
+      "command": "go",
+      "args": ["run", "github.com/tejzpr/mimir-mcp/cmd/server@latest"],
+      "env": {
+        "ENCRYPTION_KEY": "your-32-char-encryption-key-here"
+      }
+    }
+  }
+}
+```
+
+#### Option 3: Docker Container
 
 Configure your MCP client to use the Docker Hub image (no build required).
 
