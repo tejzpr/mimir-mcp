@@ -1,0 +1,36 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "tls": {
+      "enabled": true,
+      "cert_file": "/etc/ssl/certs/mimir.pem",
+      "key_file": "/etc/ssl/private/mimir.key"
+    }
+  },
+  "database": {
+    "type": "postgres",
+    "sqlite_path": "",
+    "postgres_dsn": "postgresql://mimir:PASSWORD@localhost:5432/mimir_prod?sslmode=require"
+  },
+  "auth": {
+    "type": "saml"
+  },
+  "saml": {
+    "entity_id": "https://your-production-domain.com",
+    "acs_url": "https://your-production-domain.com/saml/acs",
+    "metadata_url": "https://your-production-domain.com/saml/metadata",
+    "idp_metadata": "https://idp.example.com/metadata",
+    "certificate": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+    "private_key": "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+    "provider": "okta"
+  },
+  "git": {
+    "default_branch": "main",
+    "sync_interval_minutes": 60
+  },
+  "security": {
+    "encryption_key": "GENERATED_KEY_HERE",
+    "token_ttl_hours": 12
+  }
+}

@@ -1,0 +1,43 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Output of go coverage tool
+*.out
+coverage.txt
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Configuration (contains secrets)
+config.json
+*.key
+*.pem
+
+# Local database
+*.db
+*.db-shm
+*.db-wal
+
+# Local directories
+.mimir/

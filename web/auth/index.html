@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mimir - Authentication</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 450px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .logo h1 {
+            font-size: 32px;
+            color: #667eea;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .logo p {
+            color: #64748b;
+            font-size: 14px;
+        }
+
+        .auth-section {
+            margin-bottom: 30px;
+        }
+
+        .auth-section h2 {
+            font-size: 18px;
+            color: #1e293b;
+            margin-bottom: 16px;
+            font-weight: 600;
+        }
+
+        .saml-button {
+            width: 100%;
+            padding: 14px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+
+        .saml-button:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .saml-button:active {
+            transform: translateY(0);
+        }
+
+        .divider {
+            text-align: center;
+            margin: 30px 0;
+            position: relative;
+        }
+
+        .divider::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            width: 100%;
+            height: 1px;
+            background: #e2e8f0;
+        }
+
+        .divider span {
+            background: white;
+            padding: 0 16px;
+            color: #94a3b8;
+            font-size: 14px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #475569;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-group small {
+            display: block;
+            margin-top: 6px;
+            color: #94a3b8;
+            font-size: 12px;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+            margin-right: 10px;
+            cursor: pointer;
+        }
+
+        .checkbox-group label {
+            color: #475569;
+            font-size: 14px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        #patSection {
+            transition: all 0.3s ease;
+        }
+
+        #patSection.hidden {
+            display: none;
+        }
+
+        .info-box {
+            background: #f1f5f9;
+            border-left: 4px solid #667eea;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .info-box p {
+            color: #475569;
+            font-size: 13px;
+            line-align: 1.5;
+        }
+
+        .footer {
+            margin-top: 30px;
+            text-align: center;
+            color: #94a3b8;
+            font-size: 12px;
+        }
+
+        .error {
+            background: #fee2e2;
+            border-left: 4px solid #ef4444;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .error p {
+            color: #991b1b;
+            font-size: 13px;
+        }
+
+        .error.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <h1>🧠 Mimir</h1>
+            <p>Git-backed LLM Memory System</p>
+        </div>
+
+        <div class="error" id="errorBox">
+            <p id="errorMessage"></p>
+        </div>
+
+        <div class="info-box">
+            <p>Sign in with your organization's SAML provider to access Mimir.</p>
+        </div>
+
+        <!-- SAML Authentication Section -->
+        <div class="auth-section" id="samlSection">
+            <h2>Step 1: Authenticate with SAML</h2>
+            <form id="authForm" action="/saml/login" method="GET">
+                <button type="submit" class="saml-button">
+                    🔐 Sign in with SAML
+                </button>
+            </form>
+        </div>
+
+        <!-- Local Authentication Section -->
+        <div class="auth-section" id="localSection" style="display: none;">
+            <h2>Step 1: Local Authentication</h2>
+            <div class="info-box">
+                <p>🔓 Development mode: Using system username</p>
+                <p id="localUsername"><strong>Username will be auto-detected from system</strong></p>
+            </div>
+            <form id="localAuthForm" action="/auth/local" method="POST">
+                <button type="submit" class="saml-button">
+                    ✓ Continue with Local Auth
+                </button>
+            </form>
+        </div>
+
+        <div class="divider">
+            <span>Optional Configuration</span>
+        </div>
+
+        <div class="auth-section">
+            <h2>Step 2: Git Repository (Optional)</h2>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="localOnlyCheckbox" name="localOnly">
+                <label for="localOnlyCheckbox">Local only (no remote sync)</label>
+            </div>
+
+            <div id="patSection">
+                <div class="form-group">
+                    <label for="patToken">GitHub Personal Access Token</label>
+                    <input 
+                        type="password" 
+                        id="patToken" 
+                        name="patToken"
+                        placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                        autocomplete="off"
+                    >
+                    <small>Required for syncing memories to GitHub. <a href="https://github.com/settings/tokens" target="_blank">Generate token</a></small>
+                </div>
+
+                <div class="form-group">
+                    <label for="repoUrl">Repository URL (Optional)</label>
+                    <input 
+                        type="text" 
+                        id="repoUrl" 
+                        name="repoUrl"
+                        placeholder="https://github.com/username/repo.git"
+                    >
+                    <small>Leave empty to create a new repository automatically</small>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>Secure authentication powered by SAML 2.0</p>
+        </div>
+    </div>
+
+    <script>
+        // Detect auth type from server (check which endpoints are available)
+        async function detectAuthType() {
+            try {
+                // Try to fetch SAML metadata endpoint
+                const response = await fetch('/saml/metadata', { method: 'HEAD' });
+                if (response.ok || response.status === 405) {
+                    // SAML endpoint exists
+                    document.getElementById('samlSection').style.display = 'block';
+                    document.getElementById('localSection').style.display = 'none';
+                    return 'saml';
+                }
+            } catch (e) {
+                // SAML not available, use local
+                document.getElementById('samlSection').style.display = 'none';
+                document.getElementById('localSection').style.display = 'block';
+                return 'local';
+            }
+        }
+
+        // Initialize on page load
+        detectAuthType();
+
+        // Handle local-only checkbox
+        const localOnlyCheckbox = document.getElementById('localOnlyCheckbox');
+        const patSection = document.getElementById('patSection');
+        const patToken = document.getElementById('patToken');
+
+        localOnlyCheckbox.addEventListener('change', function() {
+            if (this.checked) {
+                patSection.classList.add('hidden');
+                patToken.required = false;
+            } else {
+                patSection.classList.remove('hidden');
+                patToken.required = false; // Keep optional
+            }
+        });
+
+        // Handle SAML form submission with PAT token
+        document.getElementById('authForm').addEventListener('submit', function(e) {
+            const pat = document.getElementById('patToken').value;
+            const repoUrl = document.getElementById('repoUrl').value;
+            const localOnly = localOnlyCheckbox.checked;
+
+            // Store PAT and repo info in sessionStorage for post-auth processing
+            if (pat || repoUrl || localOnly) {
+                sessionStorage.setItem('mimir_pat', pat);
+                sessionStorage.setItem('mimir_repo_url', repoUrl);
+                sessionStorage.setItem('mimir_local_only', localOnly ? 'true' : 'false');
+            }
+        });
+
+        // Handle local auth form submission
+        document.getElementById('localAuthForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const pat = document.getElementById('patToken').value;
+            const repoUrl = document.getElementById('repoUrl').value;
+            const localOnly = localOnlyCheckbox.checked;
+
+            // Send to local auth endpoint
+            const formData = new FormData();
+            if (pat) formData.append('pat_token', pat);
+            if (repoUrl) formData.append('repo_url', repoUrl);
+            formData.append('local_only', localOnly ? 'true' : 'false');
+
+            fetch('/auth/local', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.token) {
+                    sessionStorage.setItem('mimir_token', data.token);
+                    window.location.href = '/?success=true&username=' + encodeURIComponent(data.username);
+                } else {
+                    throw new Error('No token received');
+                }
+            })
+            .catch(error => {
+                const errorBox = document.getElementById('errorBox');
+                const errorMessage = document.getElementById('errorMessage');
+                errorMessage.textContent = 'Authentication failed: ' + error.message;
+                errorBox.classList.add('show');
+            });
+        });
+
+        // Check for authentication errors in URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const error = urlParams.get('error');
+        if (error) {
+            const errorBox = document.getElementById('errorBox');
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.textContent = decodeURIComponent(error);
+            errorBox.classList.add('show');
+        }
+
+        // Check for successful authentication
+        const success = urlParams.get('success');
+        if (success === 'true') {
+            const token = urlParams.get('token');
+            const username = urlParams.get('username');
+            if (token) {
+                sessionStorage.setItem('mimir_token', token);
+                if (username) {
+                    alert('Authenticated as: ' + decodeURIComponent(username));
+                }
+                // Could redirect to main application here
+            }
+        }
+    </script>
+</body>
+</html>
