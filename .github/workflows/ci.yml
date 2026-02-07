@@ -62,6 +62,9 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
 
+    - name: Install SQLite dev (CGO/sqlite-vec)
+      run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
     - name: Download dependencies
       run: go mod download
 
@@ -89,6 +92,9 @@ jobs:
       with:
         go-version: '1.24'
 
+    - name: Install SQLite dev (CGO/sqlite-vec)
+      run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v6
       with:
@@ -109,6 +115,9 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
+
+    - name: Install SQLite dev (CGO/sqlite-vec)
+      run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
 
     - name: Build
       run: make build
@@ -195,42 +204,21 @@ jobs:
       id: version
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
+    - name: Install SQLite dev (CGO/sqlite-vec)
+      run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
     - name: Build binaries
       run: |
         mkdir -p dist
-        
-        # All builds use CGO_ENABLED=0 - pure-Go SQLite via modernc.org/sqlite
-        # Linux amd64
-        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/medha-linux-amd64 cmd/server/main.go
-        
-        # Linux arm64
-        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/medha-linux-arm64 cmd/server/main.go
-        
-        # macOS amd64 (Intel)
-        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/medha-darwin-amd64 cmd/server/main.go
-        
-        # macOS arm64 (Apple Silicon)
-        CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/medha-darwin-arm64 cmd/server/main.go
-        
-        # Windows amd64
-        CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/medha-windows-amd64.exe cmd/server/main.go
+        # Linux amd64 only (CGO required for sqlite-vec)
+        CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s -X main.Version=${{ steps.version.outputs.VERSION }}" -o dist/medha-linux-amd64 cmd/server/main.go
 
     - name: Create archives
       run: |
         cd dist
-        
-        # Create tar.gz for Linux and macOS
-        for f in medha-linux-* medha-darwin-*; do
+        for f in medha-linux-*; do
           if [ -f "$f" ]; then
             tar -czvf "${f}.tar.gz" "$f"
-            rm "$f"
-          fi
-        done
-        
-        # Create zip for Windows
-        for f in medha-windows-*.exe; do
-          if [ -f "$f" ]; then
-            zip "${f%.exe}.zip" "$f"
             rm "$f"
           fi
         done
@@ -240,7 +228,6 @@ jobs:
       with:
         files: |
           dist/*.tar.gz
-          dist/*.zip
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

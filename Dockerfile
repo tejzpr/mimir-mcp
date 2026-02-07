@@ -3,7 +3,7 @@ FROM golang:1.24-alpine AS builder
 
 # Install git for go-git operations, ca-certificates, and CGO build dependencies
 # gcc and musl-dev are required for CGO (sqlite-vec uses CGO)
-RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
+RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev sqlite-dev
 
 WORKDIR /app
 
