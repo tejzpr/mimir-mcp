@@ -529,6 +529,7 @@ func formatRecallResultsV2(results []RecallResult) string {
 }
 
 // calculateContentHash computes a SHA256 hash of content for embedding staleness detection
+//nolint:unused // reserved for future use
 func calculateContentHash(content string) string {
 	hash := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(hash[:])
