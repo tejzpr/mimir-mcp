@@ -102,6 +102,16 @@ func setDefaults(v *viper.Viper) {
 
 	// Security defaults
 	v.SetDefault("security.token_ttl_hours", 24)
+
+	// Embedding defaults
+	v.SetDefault("embeddings.enabled", false)
+	v.SetDefault("embeddings.provider", "openai")
+	v.SetDefault("embeddings.base_url", "https://api.openai.com/v1")
+	v.SetDefault("embeddings.model", "text-embedding-3-small")
+	v.SetDefault("embeddings.api_key_env", "OPENAI_API_KEY")
+	v.SetDefault("embeddings.dimensions", 1536)
+	v.SetDefault("embeddings.lazy_index", true)
+	v.SetDefault("embeddings.batch_size", 100)
 }
 
 // loadFromDefaults creates a config from default values
@@ -166,6 +176,31 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("security.token_ttl_hours must be at least 1, got %d", cfg.Security.TokenTTL)
 	}
 
+	// Validate embeddings settings only if enabled
+	if cfg.Embeddings.Enabled {
+		if !IsValidEmbeddingProvider(cfg.Embeddings.Provider) {
+			return fmt.Errorf("embeddings.provider must be one of %v, got '%s'",
+				ValidEmbeddingProviders(), cfg.Embeddings.Provider)
+		}
+
+		if cfg.Embeddings.Dimensions < 1 {
+			return fmt.Errorf("embeddings.dimensions must be at least 1, got %d", cfg.Embeddings.Dimensions)
+		}
+
+		if cfg.Embeddings.BatchSize < 1 {
+			return fmt.Errorf("embeddings.batch_size must be at least 1, got %d", cfg.Embeddings.BatchSize)
+		}
+
+		// Check if API key is available (when not using local provider)
+		if cfg.Embeddings.Provider != EmbeddingProviderLocal {
+			apiKey := os.Getenv(cfg.Embeddings.APIKeyEnv)
+			if apiKey == "" {
+				return fmt.Errorf("embeddings enabled but API key not found in environment variable '%s'",
+					cfg.Embeddings.APIKeyEnv)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -213,6 +248,16 @@ func DefaultConfig() *Config {
 		},
 		Security: SecurityConfig{
 			TokenTTL: 24,
+		},
+		Embeddings: EmbeddingConfig{
+			Enabled:    false,
+			Provider:   EmbeddingProviderOpenAI,
+			BaseURL:    "https://api.openai.com/v1",
+			Model:      "text-embedding-3-small",
+			APIKeyEnv:  "OPENAI_API_KEY",
+			Dimensions: 1536,
+			LazyIndex:  true,
+			BatchSize:  100,
 		},
 	}
 }

@@ -56,8 +56,10 @@ func (h *HTTPServer) ServeAuthPage(w http.ResponseWriter, r *http.Request) {
 
 // HandleLocalAuth handles local authentication using system username
 func (h *HTTPServer) HandleLocalAuth(w http.ResponseWriter, r *http.Request) {
+	db := h.mcpServer.dbMgr.SystemDB()
+
 	// Authenticate using local username
-	user, token, err := h.localAuth.Authenticate(h.mcpServer.db)
+	user, token, err := h.localAuth.Authenticate(db)
 	if err != nil {
 		http.Error(w, "Local authentication failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -83,8 +85,8 @@ func (h *HTTPServer) HandleLocalAuth(w http.ResponseWriter, r *http.Request) {
 	// Check if repo already exists (check both database and filesystem)
 	var existingRepo database.MedhaGitRepo
 	expectedRepoPath := git.GetUserRepositoryPath(storePath, user.Username)
-	
-	err = h.mcpServer.db.Where("user_id = ?", user.ID).First(&existingRepo).Error
+
+	err = db.Where("user_id = ?", user.ID).First(&existingRepo).Error
 	if err != nil {
 		// No repo in database, check if folder exists on disk (recovery scenario)
 		if _, statErr := os.Stat(expectedRepoPath); statErr == nil {
@@ -101,7 +103,7 @@ func (h *HTTPServer) HandleLocalAuth(w http.ResponseWriter, r *http.Request) {
 				RepoPath:          expectedRepoPath,
 				PATTokenEncrypted: encryptedPAT,
 			}
-			h.mcpServer.db.Create(repo)
+			db.Create(repo)
 		} else {
 			// Create new repository
 			result, err := git.SetupUserRepository(setupCfg)
@@ -125,7 +127,7 @@ func (h *HTTPServer) HandleLocalAuth(w http.ResponseWriter, r *http.Request) {
 				RepoPath:          result.RepoPath,
 				PATTokenEncrypted: encryptedPAT,
 			}
-			h.mcpServer.db.Create(repo)
+			db.Create(repo)
 		}
 	}
 
@@ -140,6 +142,8 @@ func (h *HTTPServer) HandleLocalAuth(w http.ResponseWriter, r *http.Request) {
 
 // HandleMCP handles MCP protocol requests
 func (h *HTTPServer) HandleMCP(w http.ResponseWriter, r *http.Request) {
+	db := h.mcpServer.dbMgr.SystemDB()
+
 	// Get user ID from context
 	userID, ok := auth.GetUserIDFromContext(r.Context())
 	if !ok {
@@ -149,7 +153,7 @@ func (h *HTTPServer) HandleMCP(w http.ResponseWriter, r *http.Request) {
 
 	// Get user's repository
 	var repo database.MedhaGitRepo
-	if err := h.mcpServer.db.Where("user_id = ?", userID).First(&repo).Error; err != nil {
+	if err := db.Where("user_id = ?", userID).First(&repo).Error; err != nil {
 		http.Error(w, "Repository not found", http.StatusNotFound)
 		return
 	}

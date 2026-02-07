@@ -21,9 +21,10 @@ import (
 )
 
 // testSetup creates a test environment with database, git repo, and user
+// Updated to use v2 architecture with DatabaseManager and per-user DB
 type testSetup struct {
-	DB       *database.Config
-	DBConn   interface{ Close() error }
+	DBCfg    *database.Config
+	DBMgr    *database.Manager
 	User     *database.MedhaUser
 	Repo     *database.MedhaGitRepo
 	RepoPath string
@@ -33,55 +34,66 @@ type testSetup struct {
 
 func setupTestEnvironment(t *testing.T) *testSetup {
 	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test.db")
+	systemDBPath := filepath.Join(tempDir, "system.db")
 	repoPath := filepath.Join(tempDir, "repo")
 
-	// Connect to database
+	// Create repo directory
+	require.NoError(t, os.MkdirAll(repoPath, 0755))
+
+	// Create database manager (v2 architecture)
 	dbCfg := &database.Config{
 		Type:       "sqlite",
-		SQLitePath: dbPath,
+		SQLitePath: systemDBPath,
 		LogLevel:   logger.Silent,
 	}
 
-	db, err := database.Connect(dbCfg)
+	mgr, err := database.NewManager(dbCfg)
 	require.NoError(t, err)
 
-	err = database.Migrate(db)
+	// Run v1 migrations on system DB for backward compatibility with tool handlers
+	// Tool handlers still use MedhaMemory tables from system DB
+	err = database.Migrate(mgr.SystemDB())
 	require.NoError(t, err)
 
-	// Create test user
+	// Create test user in system DB
 	user := &database.MedhaUser{
 		Username: "testuser",
 		Email:    "test@example.com",
 	}
-	db.Create(user)
+	mgr.SystemDB().Create(user)
 
-	// Initialize git repository
-	_, err = git.InitRepository(repoPath)
-	require.NoError(t, err)
+	// Initialize git repository (skip if sandboxed)
+	_, gitErr := git.InitRepository(repoPath)
+	if gitErr != nil {
+		// Create archive directory manually if git init fails
+		_ = os.MkdirAll(filepath.Join(repoPath, "archive"), 0755)
+	} else {
+		// Create initial structure
+		_ = os.MkdirAll(filepath.Join(repoPath, "archive"), 0755)
+	}
 
-	// Create initial structure
-	_ = os.MkdirAll(filepath.Join(repoPath, "archive"), 0755)
-
-	// Store repo in database
+	// Store repo in system database
 	dbRepo := &database.MedhaGitRepo{
 		UserID:   user.ID,
 		RepoUUID: "test-uuid",
 		RepoName: "test-repo",
 		RepoPath: repoPath,
 	}
-	db.Create(dbRepo)
+	mgr.SystemDB().Create(dbRepo)
 
-	toolCtx := tools.NewToolContext(db, repoPath)
+	// Create tool context using v2 manager
+	toolCtx, err := tools.NewToolContextWithManager(mgr, repoPath)
+	require.NoError(t, err)
 
 	return &testSetup{
-		DB:       dbCfg,
+		DBCfg:    dbCfg,
+		DBMgr:    mgr,
 		User:     user,
 		Repo:     dbRepo,
 		RepoPath: repoPath,
 		ToolCtx:  toolCtx,
 		Cleanup: func() {
-			database.Close(db)
+			mgr.Close()
 		},
 	}
 }

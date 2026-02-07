@@ -8,6 +8,8 @@ services:
       - "8080:8080"
     environment:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-your-32-char-encryption-key-here}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MEDHA_EMBEDDINGS_ENABLED=${MEDHA_EMBEDDINGS_ENABLED:-false}
     volumes:
       # Persist database and git repos
       - medha-data:/home/medha/.medha

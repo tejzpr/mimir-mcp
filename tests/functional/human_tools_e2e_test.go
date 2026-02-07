@@ -20,6 +20,7 @@ import (
 )
 
 // TestE2EHumanToolsWorkflow tests a complete workflow using human-aligned tools
+// Updated to use v2 architecture with DatabaseManager and per-user database
 func TestE2EHumanToolsWorkflow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
@@ -27,29 +28,30 @@ func TestE2EHumanToolsWorkflow(t *testing.T) {
 
 	// Setup
 	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test.db")
+	systemDBPath := filepath.Join(tempDir, "system.db")
 	storePath := filepath.Join(tempDir, "store")
 
-	// Initialize database
+	// Initialize database manager (v2 architecture)
 	dbCfg := &database.Config{
 		Type:       "sqlite",
-		SQLitePath: dbPath,
+		SQLitePath: systemDBPath,
 		LogLevel:   logger.Silent,
 	}
 
-	db, err := database.Connect(dbCfg)
+	mgr, err := database.NewManager(dbCfg)
 	require.NoError(t, err)
-	defer database.Close(db)
+	defer mgr.Close()
 
-	err = database.Migrate(db)
+	// Run v1 migrations on system DB for backward compatibility with tool handlers
+	err = database.Migrate(mgr.SystemDB())
 	require.NoError(t, err)
 
-	// Create test user
+	// Create test user in system DB
 	user := &database.MedhaUser{
 		Username: "testuser@example.com",
 		Email:    "testuser@example.com",
 	}
-	db.Create(user)
+	mgr.SystemDB().Create(user)
 	t.Logf("✓ User created: %s", user.Username)
 
 	// Setup repository
@@ -63,17 +65,18 @@ func TestE2EHumanToolsWorkflow(t *testing.T) {
 	require.NoError(t, err)
 	t.Logf("✓ Repository created: %s", setupResult.RepoPath)
 
-	// Store repo in database
+	// Store repo in system database
 	dbRepo := &database.MedhaGitRepo{
 		UserID:   user.ID,
 		RepoUUID: setupResult.RepoID,
 		RepoName: setupResult.RepoName,
 		RepoPath: setupResult.RepoPath,
 	}
-	db.Create(dbRepo)
+	mgr.SystemDB().Create(dbRepo)
 
-	// Create tool context
-	toolCtx := tools.NewToolContext(db, setupResult.RepoPath)
+	// Create tool context using v2 manager
+	toolCtx, err := tools.NewToolContextWithManager(mgr, setupResult.RepoPath)
+	require.NoError(t, err)
 
 	// Initialize handlers
 	rememberHandler := tools.RememberHandler(toolCtx, user.ID)
@@ -246,30 +249,32 @@ func TestE2EHumanToolsWorkflow(t *testing.T) {
 }
 
 // TestE2EMultiUserHumanTools tests multi-user isolation with human-aligned tools
+// Updated to use v2 architecture with DatabaseManager and per-user databases
 func TestE2EMultiUserHumanTools(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping multi-user E2E test in short mode")
 	}
 
 	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test.db")
+	systemDBPath := filepath.Join(tempDir, "system.db")
 	storePath := filepath.Join(tempDir, "store")
 
-	// Initialize database
+	// Initialize database manager (v2 architecture)
 	dbCfg := &database.Config{
 		Type:       "sqlite",
-		SQLitePath: dbPath,
+		SQLitePath: systemDBPath,
 		LogLevel:   logger.Silent,
 	}
 
-	db, err := database.Connect(dbCfg)
+	mgr, err := database.NewManager(dbCfg)
 	require.NoError(t, err)
-	defer database.Close(db)
+	defer mgr.Close()
 
-	err = database.Migrate(db)
+	// Run v1 migrations on system DB for backward compatibility with tool handlers
+	err = database.Migrate(mgr.SystemDB())
 	require.NoError(t, err)
 
-	// Create two users
+	// Create two users in system DB
 	users := []*database.MedhaUser{
 		{Username: "alice@example.com", Email: "alice@example.com"},
 		{Username: "bob@example.com", Email: "bob@example.com"},
@@ -286,7 +291,7 @@ func TestE2EMultiUserHumanTools(t *testing.T) {
 	userContexts := make([]userContext, len(users))
 
 	for i, user := range users {
-		db.Create(user)
+		mgr.SystemDB().Create(user)
 
 		setupCfg := &git.SetupConfig{
 			BaseStorePath: storePath,
@@ -303,9 +308,11 @@ func TestE2EMultiUserHumanTools(t *testing.T) {
 			RepoName: setupResult.RepoName,
 			RepoPath: setupResult.RepoPath,
 		}
-		db.Create(dbRepo)
+		mgr.SystemDB().Create(dbRepo)
 
-		toolCtx := tools.NewToolContext(db, setupResult.RepoPath)
+		// Create tool context using v2 manager
+		toolCtx, err := tools.NewToolContextWithManager(mgr, setupResult.RepoPath)
+		require.NoError(t, err)
 
 		userContexts[i] = userContext{
 			user:     user,
@@ -315,7 +322,7 @@ func TestE2EMultiUserHumanTools(t *testing.T) {
 			recall:   tools.RecallHandler(toolCtx, user.ID),
 		}
 
-		t.Logf("✓ User %s setup complete", user.Username)
+		t.Logf("✓ User %s setup complete with per-user DB", user.Username)
 	}
 
 	ctx := context.Background()
@@ -364,30 +371,33 @@ func TestE2EMultiUserHumanTools(t *testing.T) {
 }
 
 // TestE2EHumanToolsAnnotations tests the annotation feature
+// Updated to use v2 architecture with DatabaseManager and per-user database
 func TestE2EHumanToolsAnnotations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping annotation E2E test in short mode")
 	}
 
 	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test.db")
+	systemDBPath := filepath.Join(tempDir, "system.db")
 	storePath := filepath.Join(tempDir, "store")
 
+	// Initialize database manager (v2 architecture)
 	dbCfg := &database.Config{
 		Type:       "sqlite",
-		SQLitePath: dbPath,
+		SQLitePath: systemDBPath,
 		LogLevel:   logger.Silent,
 	}
 
-	db, err := database.Connect(dbCfg)
+	mgr, err := database.NewManager(dbCfg)
 	require.NoError(t, err)
-	defer database.Close(db)
+	defer mgr.Close()
 
-	err = database.Migrate(db)
+	// Run v1 migrations on system DB for backward compatibility with tool handlers
+	err = database.Migrate(mgr.SystemDB())
 	require.NoError(t, err)
 
 	user := &database.MedhaUser{Username: "annotator@example.com", Email: "annotator@example.com"}
-	db.Create(user)
+	mgr.SystemDB().Create(user)
 
 	setupCfg := &git.SetupConfig{
 		BaseStorePath: storePath,
@@ -404,9 +414,11 @@ func TestE2EHumanToolsAnnotations(t *testing.T) {
 		RepoName: setupResult.RepoName,
 		RepoPath: setupResult.RepoPath,
 	}
-	db.Create(dbRepo)
+	mgr.SystemDB().Create(dbRepo)
 
-	toolCtx := tools.NewToolContext(db, setupResult.RepoPath)
+	// Create tool context using v2 manager
+	toolCtx, err := tools.NewToolContextWithManager(mgr, setupResult.RepoPath)
+	require.NoError(t, err)
 	rememberHandler := tools.RememberHandler(toolCtx, user.ID)
 	recallHandler := tools.RecallHandler(toolCtx, user.ID)
 

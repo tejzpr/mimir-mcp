@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/tejzpr/medha-mcp/internal/database"
 	"github.com/tejzpr/medha-mcp/internal/git"
+	"github.com/tejzpr/medha-mcp/internal/locking"
 	"github.com/tejzpr/medha-mcp/internal/memory"
 	"gorm.io/gorm"
 )
@@ -42,6 +43,7 @@ func NewConnectTool() mcp.Tool {
 }
 
 // ConnectHandler handles the medha_connect tool
+// Uses v2 architecture: UserDB for per-user memories with slug-based associations
 func ConnectHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(c context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		fromSlug, err := request.RequireString("from")
@@ -58,24 +60,29 @@ func ConnectHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Cal
 		relationship := request.GetString("relationship", "related")
 		strength := request.GetFloat("strength", 0.5)
 
+		// Validate UserDB is available
+		if ctx.UserDB == nil {
+			return mcp.NewToolResultError("per-user database not available"), nil
+		}
+
 		// Map simplified relationship names to internal constants
 		assocType := mapRelationshipType(relationship)
 		if assocType == "" {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid relationship type: '%s'. Valid: related, references, follows, supersedes, part_of", relationship)), nil
 		}
 
-		// Get source memory
-		var fromMem database.MedhaMemory
-		if err := ctx.DB.Where("slug = ? AND user_id = ?", fromSlug, userID).First(&fromMem).Error; err != nil {
+		// Get source memory from UserDB
+		var fromMem database.UserMemory
+		if err := ctx.UserDB.Where("slug = ?", fromSlug).First(&fromMem).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return mcp.NewToolResultError(fmt.Sprintf("memory not found: %s", fromSlug)), nil
 			}
 			return mcp.NewToolResultError(fmt.Sprintf("database error: %v", err)), nil
 		}
 
-		// Get target memory
-		var toMem database.MedhaMemory
-		if err := ctx.DB.Where("slug = ? AND user_id = ?", toSlug, userID).First(&toMem).Error; err != nil {
+		// Get target memory from UserDB
+		var toMem database.UserMemory
+		if err := ctx.UserDB.Where("slug = ?", toSlug).First(&toMem).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return mcp.NewToolResultError(fmt.Sprintf("memory not found: %s", toSlug)), nil
 			}
@@ -83,52 +90,55 @@ func ConnectHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Cal
 		}
 
 		if disconnect {
-			return handleDisconnect(ctx, &fromMem, &toMem)
+			return handleDisconnectV2(ctx, &fromMem, &toMem)
 		}
 
-		return handleConnect(ctx, userID, &fromMem, &toMem, assocType, strength)
+		return handleConnectV2(ctx, &fromMem, &toMem, assocType, strength)
 	}
 }
 
-// handleConnect creates a connection between memories
-func handleConnect(ctx *ToolContext, userID uint, fromMem, toMem *database.MedhaMemory, assocType string, strength float64) (*mcp.CallToolResult, error) {
+// handleConnectV2 creates a connection between memories (v2 architecture with slug-based associations)
+func handleConnectV2(ctx *ToolContext, fromMem, toMem *database.UserMemory, assocType string, strength float64) (*mcp.CallToolResult, error) {
 	// Check if association already exists
-	var existing database.MedhaMemoryAssociation
-	err := ctx.DB.Where("source_memory_id = ? AND target_memory_id = ?", fromMem.ID, toMem.ID).First(&existing).Error
+	var existing database.UserMemoryAssociation
+	err := ctx.UserDB.Where("source_slug = ? AND target_slug = ?", fromMem.Slug, toMem.Slug).First(&existing).Error
 	if err == nil {
 		// Association exists - update it
 		existing.AssociationType = assocType
 		existing.Strength = strength
-		if err := ctx.DB.Save(&existing).Error; err != nil {
+		if err := ctx.UserDB.Save(&existing).Error; err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to update association: %v", err)), nil
 		}
 		return mcp.NewToolResultText(fmt.Sprintf("Updated connection: '%s' -%s-> '%s' (strength: %.2f)", fromMem.Slug, assocType, toMem.Slug, strength)), nil
 	}
 
 	// Create new association
-	association := &database.MedhaMemoryAssociation{
-		SourceMemoryID:  fromMem.ID,
-		TargetMemoryID:  toMem.ID,
+	association := &database.UserMemoryAssociation{
+		SourceSlug:      fromMem.Slug,
+		TargetSlug:      toMem.Slug,
 		AssociationType: assocType,
 		Strength:        strength,
 	}
-	if err := ctx.DB.Create(association).Error; err != nil {
+	if err := ctx.UserDB.Create(association).Error; err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to create association: %v", err)), nil
 	}
 
 	// Create reverse association (bidirectional) for non-directional types
 	if !isDirectionalType(assocType) {
-		reverseAssoc := &database.MedhaMemoryAssociation{
-			SourceMemoryID:  toMem.ID,
-			TargetMemoryID:  fromMem.ID,
+		reverseAssoc := &database.UserMemoryAssociation{
+			SourceSlug:      toMem.Slug,
+			TargetSlug:      fromMem.Slug,
 			AssociationType: assocType,
 			Strength:        strength,
 		}
-		ctx.DB.Create(reverseAssoc) // Ignore errors for reverse
+		ctx.UserDB.Create(reverseAssoc) // Ignore errors for reverse
 	}
 
 	// Handle supersedes type specially - mark target as superseded
 	if assocType == database.AssociationTypeSupersedes {
+		// Capture version for optimistic locking
+		originalVersion := toMem.Version
+
 		// Update the markdown file with superseded_by in frontmatter
 		markdownContent, err := os.ReadFile(toMem.FilePath)
 		if err != nil {
@@ -155,15 +165,27 @@ func handleConnect(ctx *ToolContext, userID uint, fromMem, toMem *database.Medha
 			return mcp.NewToolResultError(fmt.Sprintf("failed to write updated file: %v", err)), nil
 		}
 
-		// Update database
-		toMem.SupersededBy = &fromMem.Slug
-		ctx.DB.Save(toMem)
-
 		// Git commit
 		gitRepo, err := git.OpenRepository(ctx.RepoPath)
 		if err == nil {
 			msgFormat := git.CommitMessageFormats{}
 			_ = gitRepo.CommitFile(toMem.FilePath, msgFormat.SupersedeMemory(toMem.Slug, fromMem.Slug))
+		}
+
+		// Update database with optimistic locking
+		now := time.Now()
+		err = locking.RetryWithBackoff(locking.MaxRetries, locking.RetryDelay, func() error {
+			return locking.UpdateWithVersion(ctx.UserDB, "memories", toMem.Slug, originalVersion, map[string]interface{}{
+				"superseded_by": fromMem.Slug,
+				"updated_at":    now,
+			})
+		})
+
+		if err != nil {
+			if _, ok := err.(*locking.ConflictError); ok {
+				return mcp.NewToolResultError("Target memory was modified by another agent. Please retry."), nil
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("failed to update database: %v", err)), nil
 		}
 
 		return mcp.NewToolResultText(fmt.Sprintf("'%s' now supersedes '%s' (marked as outdated)", fromMem.Slug, toMem.Slug)), nil
@@ -179,13 +201,13 @@ func handleConnect(ctx *ToolContext, userID uint, fromMem, toMem *database.Medha
 	return mcp.NewToolResultText(fmt.Sprintf("Connected: '%s' -%s-> '%s' (strength: %.2f)", fromMem.Slug, assocType, toMem.Slug, strength)), nil
 }
 
-// handleDisconnect removes a connection between memories
-func handleDisconnect(ctx *ToolContext, fromMem, toMem *database.MedhaMemory) (*mcp.CallToolResult, error) {
+// handleDisconnectV2 removes a connection between memories (v2 architecture)
+func handleDisconnectV2(ctx *ToolContext, fromMem, toMem *database.UserMemory) (*mcp.CallToolResult, error) {
 	// Delete forward association
-	result := ctx.DB.Where("source_memory_id = ? AND target_memory_id = ?", fromMem.ID, toMem.ID).Delete(&database.MedhaMemoryAssociation{})
+	result := ctx.UserDB.Where("source_slug = ? AND target_slug = ?", fromMem.Slug, toMem.Slug).Delete(&database.UserMemoryAssociation{})
 	
 	// Delete reverse association
-	ctx.DB.Where("source_memory_id = ? AND target_memory_id = ?", toMem.ID, fromMem.ID).Delete(&database.MedhaMemoryAssociation{})
+	ctx.UserDB.Where("source_slug = ? AND target_slug = ?", toMem.Slug, fromMem.Slug).Delete(&database.UserMemoryAssociation{})
 
 	if result.RowsAffected == 0 {
 		return mcp.NewToolResultError(fmt.Sprintf("no connection found between '%s' and '%s'", fromMem.Slug, toMem.Slug)), nil
@@ -193,6 +215,9 @@ func handleDisconnect(ctx *ToolContext, fromMem, toMem *database.MedhaMemory) (*
 
 	// If target was superseded by source, clear the superseded_by field from both DB and file
 	if toMem.SupersededBy != nil && *toMem.SupersededBy == fromMem.Slug {
+		// Capture version for optimistic locking
+		originalVersion := toMem.Version
+
 		// Update the markdown file to remove superseded_by from frontmatter
 		markdownContent, err := os.ReadFile(toMem.FilePath)
 		if err == nil {
@@ -217,9 +242,14 @@ func handleDisconnect(ctx *ToolContext, fromMem, toMem *database.MedhaMemory) (*
 			}
 		}
 
-		// Update database
-		toMem.SupersededBy = nil
-		ctx.DB.Save(toMem)
+		// Update database with optimistic locking
+		now := time.Now()
+		_ = locking.RetryWithBackoff(locking.MaxRetries, locking.RetryDelay, func() error {
+			return locking.UpdateWithVersion(ctx.UserDB, "memories", toMem.Slug, originalVersion, map[string]interface{}{
+				"superseded_by": nil,
+				"updated_at":    now,
+			})
+		})
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Disconnected: '%s' and '%s'", fromMem.Slug, toMem.Slug)), nil

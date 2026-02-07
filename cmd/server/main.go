@@ -22,7 +22,6 @@ import (
 	"github.com/tejzpr/medha-mcp/internal/rebuild"
 	"github.com/tejzpr/medha-mcp/internal/server"
 	"github.com/tejzpr/medha-mcp/pkg/scheduler"
-	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
@@ -33,13 +32,20 @@ func main() {
 	// Define command-line flags
 	httpMode := flag.Bool("http", false, "Run in HTTP server mode (default: stdio for MCP)")
 	withAccessingUser := flag.Bool("with-accessinguser", false, "Use ACCESSING_USER env var for user identity (stdio mode only)")
-	rebuildDB := flag.Bool("rebuilddb", false, "Rebuild database index from git repository")
-	forceRebuild := flag.Bool("force", false, "Force rebuild (requires --rebuilddb)")
+	rebuildDB := flag.Bool("rebuilddb", false, "Rebuild system database index from git repository")
+	rebuildUserDB := flag.String("rebuild-userdb", "", "Rebuild per-user database (requires 'all' or username/path)")
+	forceRebuild := flag.Bool("force", false, "Force rebuild (requires --rebuilddb or --rebuild-userdb)")
 	dbType := flag.String("db-type", "", "Database type (sqlite or postgres)")
 	dbPath := flag.String("db-path", "", "Database path (for sqlite)")
 	dbDSN := flag.String("db-dsn", "", "Database DSN (for postgres)")
 	configPath := flag.String("config", "", "Path to config file")
 	port := flag.Int("port", 0, "Server port (HTTP mode only)")
+	
+	// Embedding flags
+	enableEmbeddings := flag.Bool("enable-embeddings", false, "Enable semantic search with embeddings")
+	embeddingURL := flag.String("embedding-url", "", "Embedding API base URL")
+	embeddingModel := flag.String("embedding-model", "", "Embedding model name")
+	embeddingKey := flag.String("embedding-key", "", "Embedding API key (alternative to env var)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Medha MCP Server\n\n")
@@ -49,8 +55,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  %s --with-accessinguser     Start MCP server (stdio) using ACCESSING_USER env var\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s --http                   Start HTTP server with SAML authentication\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nDatabase Rebuild:\n")
-		fmt.Fprintf(os.Stderr, "  %s --rebuilddb           Rebuild database index from git repository\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s --rebuilddb --force   Rebuild and overwrite existing data\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --rebuilddb                          Rebuild system database index\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --rebuilddb --force                  Rebuild and overwrite existing data\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --rebuild-userdb all                 Rebuild all users' per-user databases\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --rebuild-userdb <username>          Rebuild specific user's per-user database\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --rebuild-userdb <path> --force      Rebuild per-user database at path (force)\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\nEmbeddings:\n")
+		fmt.Fprintf(os.Stderr, "  %s --enable-embeddings   Enable semantic search with embeddings\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nOptions:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nEnvironment Variables:\n")
@@ -60,23 +71,32 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  PORT               Server port (HTTP mode only)\n")
 		fmt.Fprintf(os.Stderr, "  ENCRYPTION_KEY     Encryption key for PAT tokens\n")
 		fmt.Fprintf(os.Stderr, "  ACCESSING_USER     Username (required with --with-accessinguser)\n")
+		fmt.Fprintf(os.Stderr, "  OPENAI_API_KEY     OpenAI API key (required when embeddings enabled)\n")
 	}
 
 	flag.Parse()
 
 	// Validate flag combinations
-	if *forceRebuild && !*rebuildDB {
-		log.Fatal("ERROR: --force can only be used with --rebuilddb")
+	if *forceRebuild && !*rebuildDB && *rebuildUserDB == "" {
+		log.Fatal("ERROR: --force can only be used with --rebuilddb or --rebuild-userdb")
 	}
 	if *rebuildDB && *httpMode {
 		log.Fatal("ERROR: --rebuilddb and --http cannot be used together")
+	}
+	if *rebuildUserDB != "" && *httpMode {
+		log.Fatal("ERROR: --rebuild-userdb and --http cannot be used together")
+	}
+	if *rebuildDB && *rebuildUserDB != "" {
+		log.Fatal("ERROR: --rebuilddb and --rebuild-userdb cannot be used together")
 	}
 	if *withAccessingUser && *httpMode {
 		log.Fatal("ERROR: --with-accessinguser can only be used with stdio mode (not --http)")
 	}
 
 	if *rebuildDB {
-		log.Println("Starting Medha database rebuild...")
+		log.Println("Starting Medha system database rebuild...")
+	} else if *rebuildUserDB != "" {
+		log.Println("Starting Medha per-user database rebuild...")
 	} else {
 		log.Println("Starting Medha MCP Server...")
 	}
@@ -111,13 +131,16 @@ func main() {
 	// Apply CLI flag overrides (highest priority)
 	applyCLIOverrides(cfg, *dbType, *dbPath, *dbDSN, *port)
 
+	// Apply embedding CLI overrides
+	applyEmbeddingCLIOverrides(cfg, *enableEmbeddings, *embeddingURL, *embeddingModel, *embeddingKey)
+
 	// Force local auth (always use local authentication)
 	cfg.Auth.Type = "local"
 
 	// Log final configuration
 	log.Printf("Configuration: database=%s", cfg.Database.Type)
 
-	// Connect to database with stderr logging for GORM
+	// Create database manager (handles system DB connection and migrations)
 	dbCfg := &database.Config{
 		Type:        cfg.Database.Type,
 		SQLitePath:  cfg.Database.SQLitePath,
@@ -125,23 +148,23 @@ func main() {
 		LogLevel:    logger.Silent, // CRITICAL: Silence GORM stdout output for MCP
 	}
 
-	db, err := database.Connect(dbCfg)
+	dbMgr, err := database.NewManager(dbCfg)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Failed to create database manager: %v", err)
 	}
-	defer database.Close(db)
+	defer dbMgr.Close()
 
 	log.Printf("Connected to database: %s", cfg.Database.Type)
 
-	// Run migrations
-	if err := database.Migrate(db); err != nil {
+	// Run additional system DB migrations (NewManager runs basic migrations)
+	if err := database.Migrate(dbMgr.SystemDB()); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
 	log.Println("Database migrations completed")
 
 	// Create indexes
-	if err := database.CreateIndexes(db); err != nil {
+	if err := database.CreateIndexes(dbMgr.SystemDB()); err != nil {
 		log.Printf("Warning: Failed to create indexes: %v", err)
 	}
 
@@ -150,26 +173,34 @@ func main() {
 
 	// REBUILD MODE: Run rebuild and exit
 	if *rebuildDB {
-		runRebuildMode(cfg, db, *forceRebuild)
+		runRebuildMode(cfg, dbMgr, *forceRebuild)
+		return
+	}
+
+	// REBUILD USER DB MODE: Run per-user database rebuild and exit
+	if *rebuildUserDB != "" {
+		runRebuildUserDBMode(cfg, dbMgr, *rebuildUserDB, *forceRebuild)
 		return
 	}
 
 	// SERVER MODE: Detect mode and run appropriately
 	if *httpMode {
 		log.Println("Running in HTTP server mode")
-		runHTTPMode(cfg, db, encryptionKey)
+		runHTTPMode(cfg, dbMgr, encryptionKey)
 	} else {
 		if *withAccessingUser {
 			log.Println("Running in stdio mode (MCP) with ACCESSING_USER authentication")
 		} else {
 			log.Println("Running in stdio mode (MCP)")
 		}
-		runStdioMode(cfg, db, encryptionKey, *withAccessingUser)
+		runStdioMode(cfg, dbMgr, encryptionKey, *withAccessingUser)
 	}
 }
 
 // runRebuildMode authenticates user, finds repo, and runs database rebuild
-func runRebuildMode(cfg *config.Config, db *gorm.DB, force bool) {
+func runRebuildMode(cfg *config.Config, dbMgr *database.Manager, force bool) {
+	db := dbMgr.SystemDB()
+
 	// Initialize local auth
 	tokenManager := auth.NewTokenManager(db, cfg.Security.TokenTTL)
 	localAuth := auth.NewLocalAuthenticator(tokenManager)
@@ -227,6 +258,131 @@ func runRebuildMode(cfg *config.Config, db *gorm.DB, force bool) {
 
 	// Print results
 	log.Println("Rebuild completed successfully")
+	log.Printf("  Memories processed: %d", result.MemoriesProcessed)
+	log.Printf("  Memories created:   %d", result.MemoriesCreated)
+	log.Printf("  Memories skipped:   %d", result.MemoriesSkipped)
+	log.Printf("  Associations:       %d", result.AssociationsCreated)
+
+	if len(result.Errors) > 0 {
+		log.Printf("  Warnings: %d", len(result.Errors))
+		for _, e := range result.Errors {
+			log.Printf("    - %s", e)
+		}
+	}
+}
+
+// runRebuildUserDBMode rebuilds the per-user database for specified target
+// target can be: "all" (all users), username, or filesystem path
+func runRebuildUserDBMode(cfg *config.Config, dbMgr *database.Manager, target string, force bool) {
+	db := dbMgr.SystemDB()
+	opts := rebuild.Options{Force: force}
+
+	if target == "all" {
+		// Rebuild all users' per-user databases
+		var repos []database.MedhaGitRepo
+		if err := db.Find(&repos).Error; err != nil {
+			log.Fatalf("Failed to query repositories: %v", err)
+		}
+
+		if len(repos) == 0 {
+			log.Fatal("No repositories found in system database")
+		}
+
+		log.Printf("Found %d repositories to rebuild", len(repos))
+
+		var successCount, failCount int
+		for _, repo := range repos {
+			log.Printf("Rebuilding per-user database for: %s", repo.RepoPath)
+
+			if _, err := os.Stat(repo.RepoPath); os.IsNotExist(err) {
+				log.Printf("  WARNING: Repository path does not exist, skipping: %s", repo.RepoPath)
+				failCount++
+				continue
+			}
+
+			userDB, err := database.OpenUserDB(repo.RepoPath)
+			if err != nil {
+				log.Printf("  ERROR: Failed to open per-user database: %v", err)
+				failCount++
+				continue
+			}
+
+			result, err := rebuild.RebuildUserIndex(userDB, repo.RepoPath, opts)
+
+			// Close the database
+			sqlDB, _ := userDB.DB()
+			sqlDB.Close()
+
+			if err != nil {
+				log.Printf("  ERROR: Rebuild failed: %v", err)
+				failCount++
+				continue
+			}
+
+			log.Printf("  ✓ Processed: %d, Created: %d, Skipped: %d, Associations: %d",
+				result.MemoriesProcessed, result.MemoriesCreated,
+				result.MemoriesSkipped, result.AssociationsCreated)
+			successCount++
+		}
+
+		log.Printf("\nRebuild completed: %d succeeded, %d failed", successCount, failCount)
+		return
+	}
+
+	// Single target: could be username or path
+	var repoPath string
+
+	// Check if target is a path (absolute or relative)
+	if filepath.IsAbs(target) || target == "." || target == ".." || 
+		(len(target) > 0 && (target[0] == '.' || target[0] == '/')) {
+		// Treat as path
+		absPath, err := filepath.Abs(target)
+		if err != nil {
+			log.Fatalf("Invalid path: %v", err)
+		}
+		repoPath = absPath
+	} else {
+		// Treat as username - lookup in database
+		var repo database.MedhaGitRepo
+		err := db.Joins("JOIN medha_users ON medha_users.id = medha_git_repos.user_id").
+			Where("medha_users.username = ?", target).
+			First(&repo).Error
+
+		if err != nil {
+			// Also try partial match on repo path
+			err = db.Where("repo_path LIKE ?", "%"+target+"%").First(&repo).Error
+			if err != nil {
+				log.Fatalf("No repository found for user or path: %s", target)
+			}
+		}
+		repoPath = repo.RepoPath
+	}
+
+	// Verify path exists
+	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
+		log.Fatalf("Repository path does not exist: %s", repoPath)
+	}
+
+	log.Printf("Rebuilding per-user database at: %s", repoPath)
+
+	// Open per-user database
+	userDB, err := database.OpenUserDB(repoPath)
+	if err != nil {
+		log.Fatalf("Failed to open per-user database: %v", err)
+	}
+	defer func() {
+		sqlDB, _ := userDB.DB()
+		sqlDB.Close()
+	}()
+
+	// Run rebuild
+	result, err := rebuild.RebuildUserIndex(userDB, repoPath, opts)
+	if err != nil {
+		log.Fatalf("Rebuild failed: %v", err)
+	}
+
+	// Print results
+	log.Println("Per-user database rebuild completed successfully")
 	log.Printf("  Memories processed: %d", result.MemoriesProcessed)
 	log.Printf("  Memories created:   %d", result.MemoriesCreated)
 	log.Printf("  Memories skipped:   %d", result.MemoriesSkipped)
@@ -332,9 +488,35 @@ func getEnv(names ...string) string {
 	return ""
 }
 
+// applyEmbeddingCLIOverrides applies embedding-related CLI flag overrides
+func applyEmbeddingCLIOverrides(cfg *config.Config, enableEmbeddings bool, embeddingURL, embeddingModel, embeddingKey string) {
+	if enableEmbeddings {
+		cfg.Embeddings.Enabled = true
+		log.Printf("Embeddings enabled from CLI")
+	}
+
+	if embeddingURL != "" {
+		cfg.Embeddings.BaseURL = embeddingURL
+		log.Printf("Embedding URL from CLI")
+	}
+
+	if embeddingModel != "" {
+		cfg.Embeddings.Model = embeddingModel
+		log.Printf("Embedding model from CLI: %s", embeddingModel)
+	}
+
+	if embeddingKey != "" {
+		// Set the API key directly in the environment for validation
+		os.Setenv(cfg.Embeddings.APIKeyEnv, embeddingKey)
+		log.Printf("Embedding API key from CLI (hidden)")
+	}
+}
+
 // runStdioMode runs the server in stdio mode for Cursor MCP
 // If useAccessingUser is true, uses ACCESSING_USER env var for identity instead of whoami
-func runStdioMode(cfg *config.Config, db *gorm.DB, encryptionKey []byte, useAccessingUser bool) {
+func runStdioMode(cfg *config.Config, dbMgr *database.Manager, encryptionKey []byte, useAccessingUser bool) {
+	db := dbMgr.SystemDB()
+
 	// Initialize local auth
 	tokenManager := auth.NewTokenManager(db, cfg.Security.TokenTTL)
 	var localAuth *auth.LocalAuthenticator
@@ -371,7 +553,7 @@ func runStdioMode(cfg *config.Config, db *gorm.DB, encryptionKey []byte, useAcce
 	// Check if repo already exists (check both database and filesystem)
 	var existingRepo database.MedhaGitRepo
 	expectedRepoPath := git.GetUserRepositoryPath(storePath, user.Username)
-	
+
 	err = db.Where("user_id = ?", user.ID).First(&existingRepo).Error
 	if err != nil {
 		// No repo in database, check if folder exists on disk (recovery scenario)
@@ -414,8 +596,8 @@ func runStdioMode(cfg *config.Config, db *gorm.DB, encryptionKey []byte, useAcce
 		log.Fatalf("Failed to get repository: %v", err)
 	}
 
-	// Create MCP server
-	mcpServer, err := server.NewMCPServer(cfg, db, encryptionKey)
+	// Create MCP server with database manager
+	mcpServer, err := server.NewMCPServer(cfg, dbMgr, encryptionKey)
 	if err != nil {
 		log.Fatalf("Failed to create MCP server: %v", err)
 	}
@@ -426,7 +608,10 @@ func runStdioMode(cfg *config.Config, db *gorm.DB, encryptionKey []byte, useAcce
 		log.Fatalf("Failed to register tools: %v", err)
 	}
 
-	log.Println("MCP server ready (stdio mode) - 9 tools registered")
+	log.Println("MCP server ready (stdio mode) - 7 tools registered")
+	if mcpServer.HasEmbeddings() {
+		log.Println("Semantic search enabled")
+	}
 
 	// Serve via stdio
 	mcpGoServer := mcpServer.GetMCPServer()
@@ -436,20 +621,25 @@ func runStdioMode(cfg *config.Config, db *gorm.DB, encryptionKey []byte, useAcce
 }
 
 // runHTTPMode runs the server in HTTP mode for web interface
-func runHTTPMode(cfg *config.Config, db *gorm.DB, encryptionKey []byte) {
+func runHTTPMode(cfg *config.Config, dbMgr *database.Manager, encryptionKey []byte) {
+	db := dbMgr.SystemDB()
+
 	// Initialize local auth
 	tokenManager := auth.NewTokenManager(db, cfg.Security.TokenTTL)
 	localAuth := auth.NewLocalAuthenticator(tokenManager)
 	username, _ := localAuth.GetLocalUsername()
 	log.Printf("Local authentication initialized (system user: %s)", username)
 
-	// Create MCP server
-	mcpServer, err := server.NewMCPServer(cfg, db, encryptionKey)
+	// Create MCP server with database manager
+	mcpServer, err := server.NewMCPServer(cfg, dbMgr, encryptionKey)
 	if err != nil {
 		log.Fatalf("Failed to create MCP server: %v", err)
 	}
 
 	log.Println("MCP server initialized")
+	if mcpServer.HasEmbeddings() {
+		log.Println("Semantic search enabled")
+	}
 
 	// Create HTTP server (simplified, local-only)
 	httpServer := server.NewHTTPServer(mcpServer, nil, localAuth, "local", encryptionKey)

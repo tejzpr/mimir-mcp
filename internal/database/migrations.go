@@ -10,7 +10,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// AllModels returns all database models for migration
+// AllModels returns all database models for migration (v1 backward compatibility)
+// In v2, use SystemModels() and UserModels() separately
 func AllModels() []interface{} {
 	return []interface{}{
 		&MedhaUser{},
@@ -24,7 +25,8 @@ func AllModels() []interface{} {
 	}
 }
 
-// Migrate runs database migrations for all models
+// Migrate runs database migrations for all models (v1 backward compatibility)
+// In v2, the system DB uses MigrateSystemDB and per-user DBs use MigrateUserDB
 func Migrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(AllModels()...); err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)

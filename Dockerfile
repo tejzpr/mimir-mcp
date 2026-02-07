@@ -1,8 +1,9 @@
 # Build stage
 FROM golang:1.24-alpine AS builder
 
-# Install git for go-git operations and ca-certificates
-RUN apk add --no-cache git ca-certificates tzdata
+# Install git for go-git operations, ca-certificates, and CGO build dependencies
+# gcc and musl-dev are required for CGO (sqlite-vec uses CGO)
+RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
 
 WORKDIR /app
 
@@ -13,13 +14,16 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /medha cmd/server/main.go
+# Build with CGO enabled for sqlite-vec support
+# Using -ldflags to reduce binary size (strip debug info and symbol table)
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o /medha cmd/server/main.go
 
 # Runtime stage
 FROM alpine:3.19
 
-# Install git (required at runtime for go-git operations) and ca-certificates
-RUN apk add --no-cache git ca-certificates tzdata
+# Install git (required at runtime for go-git operations), ca-certificates,
+# and libgcc for CGO-linked binaries
+RUN apk add --no-cache git ca-certificates tzdata libgcc
 
 # Create non-root user
 RUN adduser -D -u 1000 medha
@@ -43,6 +47,7 @@ WORKDIR /home/medha
 # Environment variables
 ENV MEDHA_HOME=/home/medha/.medha
 ENV ENCRYPTION_KEY=""
+ENV OPENAI_API_KEY=""
 
 # Expose HTTP port
 EXPOSE 8080

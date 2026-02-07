@@ -5,7 +5,7 @@
 <h1 align="center">Medha MCP</h1>
 
 <p align="center">
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go" alt="Go Version"></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go" alt="Go Version"></a>
   <a href="https://opensource.org/licenses/MPL-2.0"><img src="https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg" alt="License: MPL 2.0"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Compatible-blue" alt="MCP"></a>
   <a href="https://hub.docker.com/r/tejzpr/medha-mcp"><img src="https://img.shields.io/docker/v/tejzpr/medha-mcp?label=Docker&logo=docker" alt="Docker Hub"></a>
@@ -21,11 +21,13 @@ Medha is a Model Context Protocol (MCP) server that provides persistent, git-ver
 - **📝 Git-Backed Storage**: Every memory change is a git commit with full history
 - **🕸️ Graph Associations**: Link memories with typed relationships
 - **🔍 Powerful Search**: Search by tags, dates, content, and associations
+- **🧠 Semantic Search**: Optional AI-powered vector search with OpenAI embeddings
 - **📊 Knowledge Graphs**: Traverse memory associations with N-hop queries
 - **🔄 Auto-Sync**: Hourly synchronization to GitHub with PAT authentication
-- **💾 Dual Storage**: Git repository (primary) + SQL database (index)
+- **💾 Dual Storage**: Git repository (primary) + per-user SQL database (index)
 - **🗑️ Soft Delete**: Archive memories while preserving complete history
-- **🏢 Multi-Database**: SQLite for development / local, PostgreSQL for production
+- **🏢 Multi-Database**: SQLite for development / local, PostgreSQL for system database
+- **🔒 Optimistic Locking**: Safe concurrent access from multiple AI agents
 
 ## Architecture
 
@@ -37,6 +39,10 @@ Medha is a Model Context Protocol (MCP) server that provides persistent, git-ver
 
 - **Go 1.24+** - For building from source
 - **Git 2.x+** - Required for version-controlled memory storage (git must be in your PATH)
+- **GCC/Build Tools** - Required for CGO (sqlite-vec vector search)
+  - macOS: `xcode-select --install`
+  - Linux: `sudo apt install build-essential`
+  - Windows: Use Docker (recommended) or MinGW
 
 ## Quick Start
 
@@ -236,11 +242,53 @@ Edit `~/.medha/configs/config.json` for advanced settings:
   },
   "security": {
     "token_ttl_hours": 24
+  },
+  "embeddings": {
+    "enabled": false,
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "api_key_env": "OPENAI_API_KEY",
+    "dimensions": 1536
   }
 }
 ```
 
 See [Configuration Guide](docs/configuration.md) for all options including SAML setup.
+
+### 5. Enable Semantic Search (Optional)
+
+For AI-powered semantic search, enable embeddings:
+
+```bash
+# Via command line
+./bin/medha --enable-embeddings
+
+# Or set in config.json
+"embeddings": { "enabled": true }
+```
+
+**Requirements:**
+- Set `OPENAI_API_KEY` environment variable
+- Or configure a compatible embedding API endpoint
+
+**Docker with embeddings:**
+```json
+{
+  "mcpServers": {
+    "medha": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-v", "/Users/yourname/.medha:/home/medha/.medha",
+        "-e", "ENCRYPTION_KEY=your-32-char-key",
+        "-e", "OPENAI_API_KEY=sk-your-key",
+        "-e", "MEDHA_EMBEDDINGS_ENABLED=true",
+        "tejzpr/medha-mcp"
+      ]
+    }
+  }
+}
+```
 
 ## MCP Tools
 
@@ -347,9 +395,11 @@ associations:
 ├── configs/
 │   └── config.json              # User configuration
 ├── db/
-│   └── medha.db                 # SQLite database (index)
+│   └── medha.db                 # System database (users, auth, repos)
 └── store/
     └── medha-{username}/        # User's git repository
+        ├── .medha/
+        │   └── medha.db         # Per-user database (memories index)
         ├── 2024/
         │   └── 01/              # Date-organized memories
         ├── tags/
@@ -357,20 +407,39 @@ associations:
         └── archive/             # Soft-deleted memories
 ```
 
+**Database Architecture (v2):**
+- **System DB** (`~/.medha/db/medha.db`): Users, authentication, repository registry
+- **Per-User DB** (`store/medha-{user}/.medha/medha.db`): Memory index, associations, tags (git-tracked)
+
 ## Development
 
+> **Note:** CGO is required for sqlite-vec. Ensure GCC is installed.
+
 ```bash
-# Run tests
-make test
-
-# Run with coverage
-make test-unit
-
 # Build
-make build
+make build              # Build binary (CGO enabled)
+make build-native       # Build optimized for current platform
 
-# Lint
-make lint
+# Run tests
+make test               # Run unit tests
+make test-integration   # Run integration tests
+make test-functional    # Run functional tests
+make test-all           # Run all tests
+
+# Run server
+make run                # stdio mode (MCP)
+make run-http           # HTTP server mode
+make run-with-embeddings # With semantic search
+
+# Code quality
+make lint               # Run linter
+make vet                # Run go vet
+make coverage           # View test coverage
+
+# Docker
+make docker-build       # Build Docker image
+make docker-run         # Run container
+make docker-run-with-embeddings # With embeddings
 ```
 
 ## Database Rebuild
@@ -378,11 +447,17 @@ make lint
 If you need to rebuild the database index from your git repository:
 
 ```bash
-# Rebuild from git (requires empty database)
+# Rebuild system database from git
 medha --rebuilddb
 
 # Rebuild and overwrite existing data
 medha --rebuilddb --force
+
+# Rebuild per-user database (v2)
+medha --rebuild-userdb all           # All users
+medha --rebuild-userdb username      # Specific user
+medha --rebuild-userdb /path/to/repo # By path
+medha --rebuild-userdb all --force   # Force overwrite
 ```
 
 ## Contributing

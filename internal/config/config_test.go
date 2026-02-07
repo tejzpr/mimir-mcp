@@ -302,3 +302,220 @@ func TestEnsureConfigDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 }
+
+func TestConfig_EmbeddingsDisabled_NoValidation(t *testing.T) {
+	// When embeddings is disabled, no API key validation should occur
+	cfg := &Config{
+		Server: ServerConfig{
+			Port: 8080,
+		},
+		Database: DatabaseConfig{
+			Type:       "sqlite",
+			SQLitePath: "/tmp/test.db",
+		},
+		Git: GitConfig{
+			SyncInterval: 60,
+		},
+		Security: SecurityConfig{
+			TokenTTL: 24,
+		},
+		Embeddings: EmbeddingConfig{
+			Enabled:    false,
+			Provider:   "openai",
+			APIKeyEnv:  "NONEXISTENT_API_KEY",
+			Dimensions: 1536,
+			BatchSize:  100,
+		},
+	}
+
+	err := validate(cfg)
+	assert.NoError(t, err)
+}
+
+func TestConfig_EmbeddingsEnabled_RequiresAPIKey(t *testing.T) {
+	// When embeddings is enabled, API key must be present in env
+	cfg := &Config{
+		Server: ServerConfig{
+			Port: 8080,
+		},
+		Database: DatabaseConfig{
+			Type:       "sqlite",
+			SQLitePath: "/tmp/test.db",
+		},
+		Git: GitConfig{
+			SyncInterval: 60,
+		},
+		Security: SecurityConfig{
+			TokenTTL: 24,
+		},
+		Embeddings: EmbeddingConfig{
+			Enabled:    true,
+			Provider:   "openai",
+			APIKeyEnv:  "NONEXISTENT_API_KEY_FOR_TEST",
+			Dimensions: 1536,
+			BatchSize:  100,
+		},
+	}
+
+	// Ensure the env var doesn't exist
+	os.Unsetenv("NONEXISTENT_API_KEY_FOR_TEST")
+
+	err := validate(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "API key not found")
+}
+
+func TestConfig_EmbeddingsEnabled_ValidWithAPIKey(t *testing.T) {
+	// Set a test API key
+	os.Setenv("TEST_EMBEDDING_API_KEY", "test-key-123")
+	defer os.Unsetenv("TEST_EMBEDDING_API_KEY")
+
+	cfg := &Config{
+		Server: ServerConfig{
+			Port: 8080,
+		},
+		Database: DatabaseConfig{
+			Type:       "sqlite",
+			SQLitePath: "/tmp/test.db",
+		},
+		Git: GitConfig{
+			SyncInterval: 60,
+		},
+		Security: SecurityConfig{
+			TokenTTL: 24,
+		},
+		Embeddings: EmbeddingConfig{
+			Enabled:    true,
+			Provider:   "openai",
+			APIKeyEnv:  "TEST_EMBEDDING_API_KEY",
+			Dimensions: 1536,
+			BatchSize:  100,
+		},
+	}
+
+	err := validate(cfg)
+	assert.NoError(t, err)
+}
+
+func TestConfig_EmbeddingsEnabled_InvalidProvider(t *testing.T) {
+	os.Setenv("TEST_EMBEDDING_API_KEY", "test-key-123")
+	defer os.Unsetenv("TEST_EMBEDDING_API_KEY")
+
+	cfg := &Config{
+		Server: ServerConfig{
+			Port: 8080,
+		},
+		Database: DatabaseConfig{
+			Type:       "sqlite",
+			SQLitePath: "/tmp/test.db",
+		},
+		Git: GitConfig{
+			SyncInterval: 60,
+		},
+		Security: SecurityConfig{
+			TokenTTL: 24,
+		},
+		Embeddings: EmbeddingConfig{
+			Enabled:    true,
+			Provider:   "invalid-provider",
+			APIKeyEnv:  "TEST_EMBEDDING_API_KEY",
+			Dimensions: 1536,
+			BatchSize:  100,
+		},
+	}
+
+	err := validate(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "embeddings.provider must be one of")
+}
+
+func TestConfig_EmbeddingsEnabled_InvalidDimensions(t *testing.T) {
+	os.Setenv("TEST_EMBEDDING_API_KEY", "test-key-123")
+	defer os.Unsetenv("TEST_EMBEDDING_API_KEY")
+
+	cfg := &Config{
+		Server: ServerConfig{
+			Port: 8080,
+		},
+		Database: DatabaseConfig{
+			Type:       "sqlite",
+			SQLitePath: "/tmp/test.db",
+		},
+		Git: GitConfig{
+			SyncInterval: 60,
+		},
+		Security: SecurityConfig{
+			TokenTTL: 24,
+		},
+		Embeddings: EmbeddingConfig{
+			Enabled:    true,
+			Provider:   "openai",
+			APIKeyEnv:  "TEST_EMBEDDING_API_KEY",
+			Dimensions: 0,
+			BatchSize:  100,
+		},
+	}
+
+	err := validate(cfg)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "embeddings.dimensions must be at least 1")
+}
+
+func TestConfig_EmbeddingsEnabled_LocalProvider_NoAPIKeyRequired(t *testing.T) {
+	// Local provider doesn't require API key
+	cfg := &Config{
+		Server: ServerConfig{
+			Port: 8080,
+		},
+		Database: DatabaseConfig{
+			Type:       "sqlite",
+			SQLitePath: "/tmp/test.db",
+		},
+		Git: GitConfig{
+			SyncInterval: 60,
+		},
+		Security: SecurityConfig{
+			TokenTTL: 24,
+		},
+		Embeddings: EmbeddingConfig{
+			Enabled:    true,
+			Provider:   "local",
+			APIKeyEnv:  "NONEXISTENT_KEY",
+			Dimensions: 384,
+			BatchSize:  50,
+		},
+	}
+
+	err := validate(cfg)
+	assert.NoError(t, err)
+}
+
+func TestDefaultConfig_EmbeddingsDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// Verify embedding defaults
+	assert.False(t, cfg.Embeddings.Enabled)
+	assert.Equal(t, "openai", cfg.Embeddings.Provider)
+	assert.Equal(t, "https://api.openai.com/v1", cfg.Embeddings.BaseURL)
+	assert.Equal(t, "text-embedding-3-small", cfg.Embeddings.Model)
+	assert.Equal(t, "OPENAI_API_KEY", cfg.Embeddings.APIKeyEnv)
+	assert.Equal(t, 1536, cfg.Embeddings.Dimensions)
+	assert.True(t, cfg.Embeddings.LazyIndex)
+	assert.Equal(t, 100, cfg.Embeddings.BatchSize)
+}
+
+func TestIsValidEmbeddingProvider(t *testing.T) {
+	assert.True(t, IsValidEmbeddingProvider("openai"))
+	assert.True(t, IsValidEmbeddingProvider("azure"))
+	assert.True(t, IsValidEmbeddingProvider("local"))
+	assert.False(t, IsValidEmbeddingProvider("invalid"))
+	assert.False(t, IsValidEmbeddingProvider(""))
+}
+
+func TestValidEmbeddingProviders(t *testing.T) {
+	providers := ValidEmbeddingProviders()
+	assert.Contains(t, providers, "openai")
+	assert.Contains(t, providers, "azure")
+	assert.Contains(t, providers, "local")
+	assert.Len(t, providers, 3)
+}

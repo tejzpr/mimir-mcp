@@ -6,6 +6,8 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -14,17 +16,30 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/tejzpr/medha-mcp/internal/database"
+	"github.com/tejzpr/medha-mcp/internal/embeddings"
 	"github.com/tejzpr/medha-mcp/internal/git"
-	"github.com/tejzpr/medha-mcp/internal/graph"
 	"github.com/tejzpr/medha-mcp/internal/memory"
 )
 
+// loadMemoryContent reads and parses a memory file
+func loadMemoryContent(filePath string) *memory.Memory {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil
+	}
+	parsed, err := memory.ParseMarkdown(string(content))
+	if err != nil {
+		return nil
+	}
+	return parsed
+}
+
 // RecallResult represents a memory retrieval result with ranking score
 type RecallResult struct {
-	Memory      *database.MedhaMemory
+	Memory      *database.UserMemory
 	Content     *memory.Memory
 	Score       float64
-	MatchSource string // "title", "content", "tag", "grep", "association"
+	MatchSource string // "title", "content", "tag", "grep", "association", "semantic"
 }
 
 // NewRecallTool creates the medha_recall tool definition
@@ -56,6 +71,7 @@ func NewRecallTool() mcp.Tool {
 }
 
 // RecallHandler handles the medha_recall tool
+// Uses v2 architecture: UserDB for per-user memories
 func RecallHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(c context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		topic := request.GetString("topic", "")
@@ -66,7 +82,12 @@ func RecallHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Call
 		includeArchived := request.GetBool("include_archived", false)
 		limit := int(request.GetFloat("limit", 10.0))
 
-		// Get user's repo
+		// Validate UserDB is available
+		if ctx.UserDB == nil {
+			return mcp.NewToolResultError("per-user database not available"), nil
+		}
+
+		// Get user's repo from system DB
 		var repo database.MedhaGitRepo
 		if err := ctx.DB.Where("user_id = ?", userID).First(&repo).Error; err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to get user repository: %v", err)), nil
@@ -76,13 +97,13 @@ func RecallHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Call
 
 		if listAll {
 			// List all memories
-			results = listAllMemories(ctx, userID, pathFilter, includeSuperseded, includeArchived)
+			results = listAllMemoriesV2(ctx, pathFilter, includeSuperseded, includeArchived)
 		} else if exact != "" {
 			// Exact text search using git grep
-			results = searchExact(ctx, userID, exact, pathFilter, repo.RepoPath)
+			results = searchExactV2(ctx, exact, pathFilter, repo.RepoPath)
 		} else if topic != "" {
 			// Topic-based search (combines multiple strategies)
-			results = searchByTopic(ctx, userID, topic, pathFilter, includeSuperseded, repo.RepoPath)
+			results = searchByTopicV2(ctx, topic, pathFilter, includeSuperseded, repo.RepoPath)
 		} else {
 			return mcp.NewToolResultError("please provide 'topic', 'exact', or set 'list_all' to true"), nil
 		}
@@ -99,11 +120,11 @@ func RecallHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Call
 
 		// Update access statistics
 		for _, r := range results {
-			updateAccessStats(ctx, r.Memory)
+			updateAccessStatsV2(ctx, r.Memory)
 		}
 
 		// Format output
-		output := formatRecallResults(results)
+		output := formatRecallResultsV2(results)
 
 		if len(results) == 0 {
 			if topic != "" {
@@ -116,9 +137,9 @@ func RecallHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Call
 	}
 }
 
-// listAllMemories returns all memories for browsing
-func listAllMemories(ctx *ToolContext, userID uint, pathFilter string, includeSuperseded, includeArchived bool) []RecallResult {
-	query := ctx.DB.Where("user_id = ?", userID)
+// listAllMemoriesV2 returns all memories for browsing (v2 architecture)
+func listAllMemoriesV2(ctx *ToolContext, pathFilter string, includeSuperseded, includeArchived bool) []RecallResult {
+	query := ctx.UserDB.Model(&database.UserMemory{})
 
 	if !includeSuperseded {
 		query = query.Where("superseded_by IS NULL")
@@ -128,7 +149,7 @@ func listAllMemories(ctx *ToolContext, userID uint, pathFilter string, includeSu
 		query = query.Unscoped()
 	}
 
-	var memories []database.MedhaMemory
+	var memories []database.UserMemory
 	query.Order("updated_at DESC").Find(&memories)
 
 	var results []RecallResult
@@ -142,7 +163,7 @@ func listAllMemories(ctx *ToolContext, userID uint, pathFilter string, includeSu
 		results = append(results, RecallResult{
 			Memory:      mem,
 			Content:     content,
-			Score:       calculateRecencyScore(mem),
+			Score:       calculateRecencyScoreV2(mem),
 			MatchSource: "list",
 		})
 	}
@@ -150,21 +171,27 @@ func listAllMemories(ctx *ToolContext, userID uint, pathFilter string, includeSu
 	return results
 }
 
-// searchByTopic performs multi-strategy topic search
-func searchByTopic(ctx *ToolContext, userID uint, topic string, pathFilter string, includeSuperseded bool, repoPath string) []RecallResult {
-	resultMap := make(map[uint]*RecallResult)
+// searchByTopicV2 performs multi-strategy topic search (v2 architecture)
+// Includes semantic search when embeddings are available
+func searchByTopicV2(ctx *ToolContext, topic string, pathFilter string, includeSuperseded bool, repoPath string) []RecallResult {
+	resultMap := make(map[string]*RecallResult) // Keyed by slug
 
 	// Strategy 1: Title match
-	searchTitle(ctx, userID, topic, resultMap, includeSuperseded)
+	searchTitleV2(ctx, topic, resultMap, includeSuperseded)
 
 	// Strategy 2: Tag match
-	searchTags(ctx, userID, topic, resultMap, includeSuperseded)
+	searchTagsV2(ctx, topic, resultMap, includeSuperseded)
 
 	// Strategy 3: Content search (file-based)
-	searchContent(ctx, userID, topic, resultMap, repoPath, includeSuperseded)
+	searchContentV2(ctx, topic, resultMap, repoPath, includeSuperseded)
 
-	// Strategy 4: Associated memories expansion
-	expandAssociations(ctx, resultMap)
+	// Strategy 4: Semantic search (when embeddings are available)
+	if ctx.HasEmbeddings() {
+		searchSemanticV2(ctx, topic, resultMap, includeSuperseded)
+	}
+
+	// Strategy 5: Associated memories expansion
+	expandAssociationsV2(ctx, resultMap)
 
 	// Apply path filter and convert to slice
 	var results []RecallResult
@@ -178,71 +205,128 @@ func searchByTopic(ctx *ToolContext, userID uint, topic string, pathFilter strin
 	return results
 }
 
-// searchTitle searches by title match
-func searchTitle(ctx *ToolContext, userID uint, topic string, resultMap map[uint]*RecallResult, includeSuperseded bool) {
-	query := ctx.DB.Where("user_id = ? AND title LIKE ?", userID, "%"+topic+"%")
-	if !includeSuperseded {
-		query = query.Where("superseded_by IS NULL")
-	}
-
-	var memories []database.MedhaMemory
-	query.Find(&memories)
-
-	for i := range memories {
-		mem := &memories[i]
-		if _, exists := resultMap[mem.ID]; !exists {
-			content := loadMemoryContent(mem.FilePath)
-			resultMap[mem.ID] = &RecallResult{
-				Memory:      mem,
-				Content:     content,
-				Score:       10.0 + calculateRecencyScore(mem), // High base score for title match
-				MatchSource: "title",
-			}
-		} else {
-			resultMap[mem.ID].Score += 5.0 // Boost if matched multiple ways
-		}
-	}
-}
-
-// searchTags searches by tag match
-func searchTags(ctx *ToolContext, userID uint, topic string, resultMap map[uint]*RecallResult, includeSuperseded bool) {
-	// Find tags matching topic
-	var tagIDs []uint
-	ctx.DB.Model(&database.MedhaTag{}).Where("name LIKE ?", "%"+topic+"%").Pluck("id", &tagIDs)
-	if len(tagIDs) == 0 {
+// searchSemanticV2 performs semantic search using embeddings (v2 architecture)
+func searchSemanticV2(ctx *ToolContext, topic string, resultMap map[string]*RecallResult, includeSuperseded bool) {
+	if ctx.EmbeddingService == nil || !ctx.EmbeddingService.IsEnabled() {
 		return
 	}
 
-	// Find memories with these tags
-	var memoryIDs []uint
-	ctx.DB.Model(&database.MedhaMemoryTag{}).Where("tag_id IN ?", tagIDs).Distinct("memory_id").Pluck("memory_id", &memoryIDs)
-
-	query := ctx.DB.Where("user_id = ? AND id IN ?", userID, memoryIDs)
-	if !includeSuperseded {
-		query = query.Where("superseded_by IS NULL")
+	// Get vector search from embedding service
+	vecSearch := ctx.EmbeddingService.GetVectorSearch()
+	if vecSearch == nil {
+		return
 	}
 
-	var memories []database.MedhaMemory
-	query.Find(&memories)
+	// Create semantic search instance
+	semanticSearch := embeddings.NewSemanticSearch(ctx.EmbeddingService, vecSearch)
 
-	for i := range memories {
-		mem := &memories[i]
-		if _, exists := resultMap[mem.ID]; !exists {
-			content := loadMemoryContent(mem.FilePath)
-			resultMap[mem.ID] = &RecallResult{
-				Memory:      mem,
-				Content:     content,
-				Score:       8.0 + calculateRecencyScore(mem),
-				MatchSource: "tag",
+	// Perform semantic search
+	searchResults, err := semanticSearch.Search(topic, 20)
+	if err != nil || searchResults == nil {
+		return
+	}
+
+	// Add results to resultMap
+	for _, sr := range searchResults {
+		// Skip if similarity is too low
+		if sr.Similarity < 0.3 {
+			continue
+		}
+
+		if _, exists := resultMap[sr.Slug]; exists {
+			// Boost existing results that also have semantic match
+			resultMap[sr.Slug].Score += float64(sr.Similarity) * 5.0
+			if resultMap[sr.Slug].MatchSource != "semantic" {
+				resultMap[sr.Slug].MatchSource += "+semantic"
 			}
 		} else {
-			resultMap[mem.ID].Score += 4.0
+			// Find memory in database
+			var mem database.UserMemory
+			if err := ctx.UserDB.Where("slug = ?", sr.Slug).First(&mem).Error; err != nil {
+				continue
+			}
+
+			// Skip superseded if not included
+			if !includeSuperseded && mem.SupersededBy != nil {
+				continue
+			}
+
+			content := loadMemoryContent(mem.FilePath)
+			resultMap[sr.Slug] = &RecallResult{
+				Memory:      &mem,
+				Content:     content,
+				Score:       float64(sr.Similarity) * 8.0, // Semantic score
+				MatchSource: "semantic",
+			}
 		}
 	}
 }
 
-// searchContent searches file content
-func searchContent(ctx *ToolContext, userID uint, topic string, resultMap map[uint]*RecallResult, repoPath string, includeSuperseded bool) {
+// searchTitleV2 searches by title match (v2 architecture)
+func searchTitleV2(ctx *ToolContext, topic string, resultMap map[string]*RecallResult, includeSuperseded bool) {
+	query := ctx.UserDB.Where("title LIKE ?", "%"+topic+"%")
+	if !includeSuperseded {
+		query = query.Where("superseded_by IS NULL")
+	}
+
+	var memories []database.UserMemory
+	query.Find(&memories)
+
+	for i := range memories {
+		mem := &memories[i]
+		if _, exists := resultMap[mem.Slug]; !exists {
+			content := loadMemoryContent(mem.FilePath)
+			resultMap[mem.Slug] = &RecallResult{
+				Memory:      mem,
+				Content:     content,
+				Score:       10.0 + calculateRecencyScoreV2(mem), // High base score for title match
+				MatchSource: "title",
+			}
+		} else {
+			resultMap[mem.Slug].Score += 5.0 // Boost if matched multiple ways
+		}
+	}
+}
+
+// searchTagsV2 searches by tag match (v2 architecture)
+func searchTagsV2(ctx *ToolContext, topic string, resultMap map[string]*RecallResult, includeSuperseded bool) {
+	// Find memory slugs with matching tags
+	var memorySlugs []string
+	ctx.UserDB.Model(&database.UserMemoryTag{}).
+		Where("tag_name LIKE ?", "%"+topic+"%").
+		Distinct("memory_slug").
+		Pluck("memory_slug", &memorySlugs)
+
+	if len(memorySlugs) == 0 {
+		return
+	}
+
+	query := ctx.UserDB.Where("slug IN ?", memorySlugs)
+	if !includeSuperseded {
+		query = query.Where("superseded_by IS NULL")
+	}
+
+	var memories []database.UserMemory
+	query.Find(&memories)
+
+	for i := range memories {
+		mem := &memories[i]
+		if _, exists := resultMap[mem.Slug]; !exists {
+			content := loadMemoryContent(mem.FilePath)
+			resultMap[mem.Slug] = &RecallResult{
+				Memory:      mem,
+				Content:     content,
+				Score:       8.0 + calculateRecencyScoreV2(mem),
+				MatchSource: "tag",
+			}
+		} else {
+			resultMap[mem.Slug].Score += 4.0
+		}
+	}
+}
+
+// searchContentV2 searches file content (v2 architecture)
+func searchContentV2(ctx *ToolContext, topic string, resultMap map[string]*RecallResult, repoPath string, includeSuperseded bool) {
 	// Use git grep for content search
 	gitRepo, err := git.OpenRepository(repoPath)
 	if err != nil {
@@ -254,16 +338,16 @@ func searchContent(ctx *ToolContext, userID uint, topic string, resultMap map[ui
 		return
 	}
 
-	// Map file paths to memory IDs
-	query := ctx.DB.Where("user_id = ?", userID)
+	// Map file paths to memory slugs
+	query := ctx.UserDB.Model(&database.UserMemory{})
 	if !includeSuperseded {
 		query = query.Where("superseded_by IS NULL")
 	}
 
-	var memories []database.MedhaMemory
+	var memories []database.UserMemory
 	query.Find(&memories)
 
-	fileToMem := make(map[string]*database.MedhaMemory)
+	fileToMem := make(map[string]*database.UserMemory)
 	for i := range memories {
 		relPath := strings.TrimPrefix(memories[i].FilePath, repoPath+"/")
 		fileToMem[relPath] = &memories[i]
@@ -275,70 +359,63 @@ func searchContent(ctx *ToolContext, userID uint, topic string, resultMap map[ui
 			continue
 		}
 
-		if _, exists := resultMap[mem.ID]; !exists {
+		if _, exists := resultMap[mem.Slug]; !exists {
 			content := loadMemoryContent(mem.FilePath)
-			resultMap[mem.ID] = &RecallResult{
+			resultMap[mem.Slug] = &RecallResult{
 				Memory:      mem,
 				Content:     content,
-				Score:       6.0 + calculateRecencyScore(mem),
+				Score:       6.0 + calculateRecencyScoreV2(mem),
 				MatchSource: "content",
 			}
 		} else {
-			resultMap[mem.ID].Score += 3.0
+			resultMap[mem.Slug].Score += 3.0
 		}
 	}
 }
 
-// expandAssociations adds associated memories to results
-func expandAssociations(ctx *ToolContext, resultMap map[uint]*RecallResult) {
+// expandAssociationsV2 adds associated memories to results (v2 architecture)
+func expandAssociationsV2(ctx *ToolContext, resultMap map[string]*RecallResult) {
 	if len(resultMap) == 0 {
 		return
 	}
 
-	// Get IDs of current results
-	var currentIDs []uint
-	for id := range resultMap {
-		currentIDs = append(currentIDs, id)
+	// Get slugs of current results
+	var currentSlugs []string
+	for slug := range resultMap {
+		currentSlugs = append(currentSlugs, slug)
 	}
 
-	// Get associated memories (1 hop)
-	graphMgr := graph.NewManager(ctx.DB)
-	for _, id := range currentIDs {
-		g, err := graphMgr.TraverseGraph(id, 1, true)
-		if err != nil {
+	// Get associated memories (1 hop) using slug-based associations
+	var associations []database.UserMemoryAssociation
+	ctx.UserDB.Where("source_slug IN ?", currentSlugs).Find(&associations)
+
+	for _, assoc := range associations {
+		if _, exists := resultMap[assoc.TargetSlug]; exists {
+			continue // Skip already in results
+		}
+
+		var mem database.UserMemory
+		if err := ctx.UserDB.Where("slug = ?", assoc.TargetSlug).First(&mem).Error; err != nil {
 			continue
 		}
 
-		for _, node := range g.Nodes {
-			if node.Depth == 0 {
-				continue // Skip the source node
-			}
+		// Only add if not superseded
+		if mem.SupersededBy != nil {
+			continue
+		}
 
-			if _, exists := resultMap[node.MemoryID]; !exists {
-				var mem database.MedhaMemory
-				if err := ctx.DB.First(&mem, node.MemoryID).Error; err != nil {
-					continue
-				}
-				
-				// Only add if not superseded
-				if mem.SupersededBy != nil {
-					continue
-				}
-
-				content := loadMemoryContent(mem.FilePath)
-				resultMap[mem.ID] = &RecallResult{
-					Memory:      &mem,
-					Content:     content,
-					Score:       3.0 + calculateRecencyScore(&mem), // Lower score for associations
-					MatchSource: "association",
-				}
-			}
+		content := loadMemoryContent(mem.FilePath)
+		resultMap[mem.Slug] = &RecallResult{
+			Memory:      &mem,
+			Content:     content,
+			Score:       3.0 + calculateRecencyScoreV2(&mem), // Lower score for associations
+			MatchSource: "association",
 		}
 	}
 }
 
-// searchExact uses git grep for exact text search
-func searchExact(ctx *ToolContext, userID uint, exact, pathFilter, repoPath string) []RecallResult {
+// searchExactV2 uses git grep for exact text search (v2 architecture)
+func searchExactV2(ctx *ToolContext, exact, pathFilter, repoPath string) []RecallResult {
 	gitRepo, err := git.OpenRepository(repoPath)
 	if err != nil {
 		return nil
@@ -350,28 +427,28 @@ func searchExact(ctx *ToolContext, userID uint, exact, pathFilter, repoPath stri
 	}
 
 	// Build file path to memory mapping
-	var memories []database.MedhaMemory
-	ctx.DB.Where("user_id = ?", userID).Find(&memories)
+	var memories []database.UserMemory
+	ctx.UserDB.Find(&memories)
 
-	fileToMem := make(map[string]*database.MedhaMemory)
+	fileToMem := make(map[string]*database.UserMemory)
 	for i := range memories {
 		relPath := strings.TrimPrefix(memories[i].FilePath, repoPath+"/")
 		fileToMem[relPath] = &memories[i]
 	}
 
-	resultMap := make(map[uint]*RecallResult)
+	resultMap := make(map[string]*RecallResult) // Keyed by slug
 	for _, gr := range grepResults {
 		mem, exists := fileToMem[gr.FilePath]
 		if !exists {
 			continue
 		}
 
-		if _, exists := resultMap[mem.ID]; !exists {
+		if _, exists := resultMap[mem.Slug]; !exists {
 			content := loadMemoryContent(mem.FilePath)
-			resultMap[mem.ID] = &RecallResult{
+			resultMap[mem.Slug] = &RecallResult{
 				Memory:      mem,
 				Content:     content,
-				Score:       10.0 + calculateRecencyScore(mem),
+				Score:       10.0 + calculateRecencyScoreV2(mem),
 				MatchSource: "grep",
 			}
 		}
@@ -384,21 +461,8 @@ func searchExact(ctx *ToolContext, userID uint, exact, pathFilter, repoPath stri
 	return results
 }
 
-// loadMemoryContent reads and parses a memory file
-func loadMemoryContent(filePath string) *memory.Memory {
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil
-	}
-	parsed, err := memory.ParseMarkdown(string(content))
-	if err != nil {
-		return nil
-	}
-	return parsed
-}
-
-// calculateRecencyScore calculates a recency-based score boost
-func calculateRecencyScore(mem *database.MedhaMemory) float64 {
+// calculateRecencyScoreV2 calculates a recency-based score boost (v2 architecture)
+func calculateRecencyScoreV2(mem *database.UserMemory) float64 {
 	daysSinceUpdate := time.Since(mem.UpdatedAt).Hours() / 24
 	if daysSinceUpdate < 1 {
 		return 2.0 // Very recent
@@ -410,16 +474,16 @@ func calculateRecencyScore(mem *database.MedhaMemory) float64 {
 	return 0.5 // Older
 }
 
-// updateAccessStats updates access statistics for a memory
-func updateAccessStats(ctx *ToolContext, mem *database.MedhaMemory) {
-	ctx.DB.Model(mem).Updates(map[string]interface{}{
+// updateAccessStatsV2 updates access statistics for a memory (v2 architecture)
+func updateAccessStatsV2(ctx *ToolContext, mem *database.UserMemory) {
+	ctx.UserDB.Model(mem).Updates(map[string]interface{}{
 		"last_accessed_at": time.Now(),
 		"access_count":     mem.AccessCount + 1,
 	})
 }
 
-// formatRecallResults formats results for output
-func formatRecallResults(results []RecallResult) string {
+// formatRecallResultsV2 formats results for output (v2 architecture)
+func formatRecallResultsV2(results []RecallResult) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Found %d memories:\n\n", len(results)))
 
@@ -462,4 +526,10 @@ func formatRecallResults(results []RecallResult) string {
 	}
 
 	return sb.String()
+}
+
+// calculateContentHash computes a SHA256 hash of content for embedding staleness detection
+func calculateContentHash(content string) string {
+	hash := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(hash[:])
 }

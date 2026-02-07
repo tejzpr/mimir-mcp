@@ -6,6 +6,8 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/tejzpr/medha-mcp/internal/database"
 	"github.com/tejzpr/medha-mcp/internal/git"
+	"github.com/tejzpr/medha-mcp/internal/locking"
 	"github.com/tejzpr/medha-mcp/internal/memory"
 	"gorm.io/gorm"
 )
@@ -59,6 +62,7 @@ type Connection struct {
 }
 
 // RememberHandler handles the medha_remember tool
+// Uses v2 architecture: UserDB for per-user memories
 func RememberHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(c context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Parse required fields
@@ -80,7 +84,12 @@ func RememberHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Ca
 		note := request.GetString("note", "")
 		connections := parseConnections(request)
 
-		// Get user's repo
+		// Validate UserDB is available
+		if ctx.UserDB == nil {
+			return mcp.NewToolResultError("per-user database not available"), nil
+		}
+
+		// Get user's repo from system DB
 		var repo database.MedhaGitRepo
 		err = ctx.DB.Where("user_id = ?", userID).First(&repo).Error
 		if err != nil {
@@ -95,18 +104,18 @@ func RememberHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Ca
 
 		// Determine if this is an update or create
 		if slug != "" {
-			// Try to find existing memory
-			var existingMem database.MedhaMemory
-			err = ctx.DB.Where("slug = ? AND user_id = ?", slug, userID).First(&existingMem).Error
+			// Try to find existing memory in UserDB
+			var existingMem database.UserMemory
+			err = ctx.UserDB.Where("slug = ?", slug).First(&existingMem).Error
 			if err == nil {
 				// Memory exists - update it
-				result, updateErr := handleUpdate(ctx, userID, &existingMem, title, content, tags, repo.RepoPath)
+				result, updateErr := handleUpdateV2(ctx, &existingMem, title, content, tags, repo.RepoPath)
 				if updateErr != nil {
 					return result, updateErr
 				}
 				// If note provided, also add annotation
 				if note != "" {
-					annotationResult, _ := handleAnnotation(ctx, userID, slug, note, repo.RepoPath)
+					annotationResult, _ := handleAnnotationV2(ctx, slug, note, repo.RepoPath)
 					// Append annotation result to update result
 					if annotationResult != nil {
 						return mcp.NewToolResultText(result.Content[0].(mcp.TextContent).Text + "\n" + annotationResult.Content[0].(mcp.TextContent).Text), nil
@@ -127,23 +136,23 @@ func RememberHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Ca
 				return mcp.NewToolResultError(fmt.Sprintf("invalid slug: %v", err)), nil
 			}
 
-			// Check if generated slug already exists
-			var existingMem database.MedhaMemory
-			err = ctx.DB.Where("slug = ?", slug).First(&existingMem).Error
+			// Check if generated slug already exists in UserDB
+			var existingMem database.UserMemory
+			err = ctx.UserDB.Where("slug = ?", slug).First(&existingMem).Error
 			if err == nil {
 				return mcp.NewToolResultError(fmt.Sprintf("memory with slug '%s' already exists. Provide a custom 'slug' parameter to update or create with different ID.", slug)), nil
 			}
 		}
 
 		// Create new memory
-		result, err := handleCreate(ctx, userID, repo.ID, slug, title, content, tags, pathFolder, repo.RepoPath)
+		result, err := handleCreateV2(ctx, slug, title, content, tags, pathFolder, repo.RepoPath)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
 		// Handle supersession if specified
 		if replaces != "" {
-			err = handleSupersession(ctx, userID, slug, replaces, repo.RepoPath)
+			err = handleSupersessionV2(ctx, slug, replaces, repo.RepoPath)
 			if err != nil {
 				// Log but don't fail - memory was created successfully
 				result = result + fmt.Sprintf("\n\nWarning: Failed to mark '%s' as superseded: %v", replaces, err)
@@ -154,7 +163,7 @@ func RememberHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Ca
 
 		// Handle connections if specified
 		if len(connections) > 0 {
-			connResults := handleConnections(ctx, userID, slug, connections)
+			connResults := handleConnectionsV2(ctx, slug, connections)
 			if connResults != "" {
 				result = result + "\n\n" + connResults
 			}
@@ -164,8 +173,8 @@ func RememberHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Ca
 	}
 }
 
-// handleCreate creates a new memory
-func handleCreate(ctx *ToolContext, userID uint, repoID uint, slug, title, content string, tags []string, pathFolder, repoPath string) (string, error) {
+// handleCreateV2 creates a new memory (v2 architecture)
+func handleCreateV2(ctx *ToolContext, slug, title, content string, tags []string, pathFolder, repoPath string) (string, error) {
 	now := time.Now()
 
 	// Create memory object
@@ -217,32 +226,38 @@ func handleCreate(ctx *ToolContext, userID uint, repoID uint, slug, title, conte
 		return "", fmt.Errorf("failed to commit: %w", err)
 	}
 
-	// Store in database
-	dbMem := &database.MedhaMemory{
-		UserID:         userID,
-		RepoID:         repoID,
+	// Calculate content hash for embedding staleness detection
+	contentHash := computeContentHash(content)
+
+	// Store in UserDB (v2 architecture)
+	dbMem := &database.UserMemory{
 		Slug:           slug,
 		Title:          title,
 		FilePath:       filePath,
 		LastAccessedAt: now,
 		AccessCount:    0,
+		ContentHash:    contentHash,
+		Version:        1,
 	}
-	if err := ctx.DB.Create(dbMem).Error; err != nil {
+	if err := ctx.UserDB.Create(dbMem).Error; err != nil {
 		return "", fmt.Errorf("failed to store memory: %w", err)
 	}
 
-	// Store tags
-	storeTags(ctx, dbMem.ID, tags)
+	// Store tags in UserDB
+	storeTagsV2(ctx, slug, tags)
 
 	return fmt.Sprintf("Memory created: %s\nSlug: %s\nPath: %s", title, slug, filePath), nil
 }
 
-// handleUpdate updates an existing memory
-func handleUpdate(ctx *ToolContext, userID uint, dbMem *database.MedhaMemory, title, content string, tags []string, repoPath string) (*mcp.CallToolResult, error) {
+// handleUpdateV2 updates an existing memory (v2 architecture)
+func handleUpdateV2(ctx *ToolContext, dbMem *database.UserMemory, title, content string, tags []string, repoPath string) (*mcp.CallToolResult, error) {
 	// Check if memory is deleted
 	if dbMem.DeletedAt.Valid {
 		return mcp.NewToolResultError(fmt.Sprintf("memory '%s' has been archived. Use medha_restore first.", dbMem.Slug)), nil
 	}
+
+	// Capture original version for optimistic locking
+	originalVersion := dbMem.Version
 
 	// Read current memory
 	markdownContent, err := os.ReadFile(dbMem.FilePath)
@@ -256,10 +271,11 @@ func handleUpdate(ctx *ToolContext, userID uint, dbMem *database.MedhaMemory, ti
 	}
 
 	// Update fields
+	newTitle := dbMem.Title
 	if title != "" {
 		title = memory.SanitizeTitle(title)
 		mem.Title = title
-		dbMem.Title = title
+		newTitle = title
 	}
 	mem.Content = content
 	mem.Updated = time.Now()
@@ -267,8 +283,8 @@ func handleUpdate(ctx *ToolContext, userID uint, dbMem *database.MedhaMemory, ti
 	// Update tags if provided
 	if len(tags) > 0 {
 		mem.Tags = tags
-		ctx.DB.Where("memory_id = ?", dbMem.ID).Delete(&database.MedhaMemoryTag{})
-		storeTags(ctx, dbMem.ID, tags)
+		ctx.UserDB.Where("memory_slug = ?", dbMem.Slug).Delete(&database.UserMemoryTag{})
+		storeTagsV2(ctx, dbMem.Slug, tags)
 	}
 
 	// Generate updated markdown
@@ -293,20 +309,34 @@ func handleUpdate(ctx *ToolContext, userID uint, dbMem *database.MedhaMemory, ti
 		return mcp.NewToolResultError(fmt.Sprintf("failed to commit: %v", err)), nil
 	}
 
-	// Update database
-	dbMem.UpdatedAt = time.Now()
-	if err := ctx.DB.Save(dbMem).Error; err != nil {
+	// Update database with optimistic locking
+	now := time.Now()
+	contentHash := computeContentHash(content)
+	updates := map[string]interface{}{
+		"title":        newTitle,
+		"updated_at":   now,
+		"content_hash": contentHash,
+	}
+
+	err = locking.RetryWithBackoff(locking.MaxRetries, locking.RetryDelay, func() error {
+		return locking.UpdateWithVersion(ctx.UserDB, "memories", dbMem.Slug, originalVersion, updates)
+	})
+
+	if err != nil {
+		if _, ok := err.(*locking.ConflictError); ok {
+			return mcp.NewToolResultError("Memory was modified by another agent. Please recall and retry."), nil
+		}
 		return mcp.NewToolResultError(fmt.Sprintf("failed to update database: %v", err)), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Memory updated: %s", dbMem.Slug)), nil
 }
 
-// handleAnnotation adds an annotation to a memory - stored in git frontmatter
-func handleAnnotation(ctx *ToolContext, userID uint, slug, note, repoPath string) (*mcp.CallToolResult, error) {
-	// Get memory from DB for file path
-	var dbMem database.MedhaMemory
-	if err := ctx.DB.Where("slug = ? AND user_id = ?", slug, userID).First(&dbMem).Error; err != nil {
+// handleAnnotationV2 adds an annotation to a memory (v2 architecture)
+func handleAnnotationV2(ctx *ToolContext, slug, note, repoPath string) (*mcp.CallToolResult, error) {
+	// Get memory from UserDB for file path
+	var dbMem database.UserMemory
+	if err := ctx.UserDB.Where("slug = ?", slug).First(&dbMem).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return mcp.NewToolResultError(fmt.Sprintf("memory not found: %s", slug)), nil
 		}
@@ -364,20 +394,29 @@ func handleAnnotation(ctx *ToolContext, userID uint, slug, note, repoPath string
 		return mcp.NewToolResultError(fmt.Sprintf("failed to commit: %v", err)), nil
 	}
 
+	// Store annotation in UserDB
+	annotation := &database.UserAnnotation{
+		MemorySlug: slug,
+		Type:       annotationType,
+		Content:    note,
+		CreatedAt:  time.Now(),
+	}
+	ctx.UserDB.Create(annotation)
+
 	return mcp.NewToolResultText(fmt.Sprintf("Annotation added to '%s' (type: %s)", slug, annotationType)), nil
 }
 
-// handleSupersession marks an old memory as superseded by a new one
-func handleSupersession(ctx *ToolContext, userID uint, newSlug, oldSlug, repoPath string) error {
-	// Get old memory
-	var oldMem database.MedhaMemory
-	if err := ctx.DB.Where("slug = ? AND user_id = ?", oldSlug, userID).First(&oldMem).Error; err != nil {
+// handleSupersessionV2 marks an old memory as superseded by a new one (v2 architecture)
+func handleSupersessionV2(ctx *ToolContext, newSlug, oldSlug, repoPath string) error {
+	// Get old memory from UserDB
+	var oldMem database.UserMemory
+	if err := ctx.UserDB.Where("slug = ?", oldSlug).First(&oldMem).Error; err != nil {
 		return fmt.Errorf("old memory not found: %s", oldSlug)
 	}
 
-	// Get new memory
-	var newMem database.MedhaMemory
-	if err := ctx.DB.Where("slug = ? AND user_id = ?", newSlug, userID).First(&newMem).Error; err != nil {
+	// Get new memory from UserDB
+	var newMem database.UserMemory
+	if err := ctx.UserDB.Where("slug = ?", newSlug).First(&newMem).Error; err != nil {
 		return fmt.Errorf("new memory not found: %s", newSlug)
 	}
 
@@ -407,20 +446,20 @@ func handleSupersession(ctx *ToolContext, userID uint, newSlug, oldSlug, repoPat
 		return fmt.Errorf("failed to write updated file: %w", err)
 	}
 
-	// Mark old memory as superseded in database
+	// Mark old memory as superseded in UserDB
 	oldMem.SupersededBy = &newSlug
-	if err := ctx.DB.Save(&oldMem).Error; err != nil {
+	if err := ctx.UserDB.Save(&oldMem).Error; err != nil {
 		return fmt.Errorf("failed to update old memory: %w", err)
 	}
 
-	// Create association
-	association := &database.MedhaMemoryAssociation{
-		SourceMemoryID:  newMem.ID,
-		TargetMemoryID:  oldMem.ID,
+	// Create association in UserDB (slug-based)
+	association := &database.UserMemoryAssociation{
+		SourceSlug:      newSlug,
+		TargetSlug:      oldSlug,
 		AssociationType: database.AssociationTypeSupersedes,
 		Strength:        1.0,
 	}
-	if err := ctx.DB.Create(association).Error; err != nil {
+	if err := ctx.UserDB.Create(association).Error; err != nil {
 		// Not a critical error - memory is still marked as superseded
 		return nil
 	}
@@ -435,19 +474,21 @@ func handleSupersession(ctx *ToolContext, userID uint, newSlug, oldSlug, repoPat
 	return nil
 }
 
-// storeTags stores tags for a memory
-func storeTags(ctx *ToolContext, memoryID uint, tags []string) {
+// storeTagsV2 stores tags for a memory (v2 architecture using slugs)
+func storeTagsV2(ctx *ToolContext, memorySlug string, tags []string) {
 	for _, tagName := range tags {
-		var tag database.MedhaTag
-		ctx.DB.Where("name = ?", tagName).FirstOrCreate(&tag, database.MedhaTag{
+		// Create tag if not exists
+		var tag database.UserTag
+		ctx.UserDB.Where("name = ?", tagName).FirstOrCreate(&tag, database.UserTag{
 			Name: tagName,
 		})
 
-		memTag := &database.MedhaMemoryTag{
-			MemoryID: memoryID,
-			TagID:    tag.ID,
+		// Create memory-tag relationship
+		memTag := &database.UserMemoryTag{
+			MemorySlug: memorySlug,
+			TagName:    tagName,
 		}
-		ctx.DB.Create(memTag)
+		ctx.UserDB.Create(memTag)
 	}
 }
 
@@ -498,20 +539,20 @@ func parseConnections(request mcp.CallToolRequest) []Connection {
 	return connections
 }
 
-// handleConnections creates associations for the newly created memory
-func handleConnections(ctx *ToolContext, userID uint, sourceSlug string, connections []Connection) string {
+// handleConnectionsV2 creates associations for the newly created memory (v2 architecture)
+func handleConnectionsV2(ctx *ToolContext, sourceSlug string, connections []Connection) string {
 	var results []string
 
-	// Get source memory
-	var sourceMem database.MedhaMemory
-	if err := ctx.DB.Where("slug = ? AND user_id = ?", sourceSlug, userID).First(&sourceMem).Error; err != nil {
+	// Verify source memory exists
+	var sourceMem database.UserMemory
+	if err := ctx.UserDB.Where("slug = ?", sourceSlug).First(&sourceMem).Error; err != nil {
 		return fmt.Sprintf("Warning: Could not find source memory for connections: %v", err)
 	}
 
 	for _, conn := range connections {
-		// Get target memory
-		var targetMem database.MedhaMemory
-		if err := ctx.DB.Where("slug = ? AND user_id = ?", conn.To, userID).First(&targetMem).Error; err != nil {
+		// Verify target memory exists
+		var targetMem database.UserMemory
+		if err := ctx.UserDB.Where("slug = ?", conn.To).First(&targetMem).Error; err != nil {
 			results = append(results, fmt.Sprintf("- Connection to '%s' failed: memory not found", conn.To))
 			continue
 		}
@@ -528,27 +569,27 @@ func handleConnections(ctx *ToolContext, userID uint, sourceSlug string, connect
 			strength = 0.5
 		}
 
-		// Create association
-		association := &database.MedhaMemoryAssociation{
-			SourceMemoryID:  sourceMem.ID,
-			TargetMemoryID:  targetMem.ID,
+		// Create association in UserDB (slug-based)
+		association := &database.UserMemoryAssociation{
+			SourceSlug:      sourceSlug,
+			TargetSlug:      conn.To,
 			AssociationType: assocType,
 			Strength:        strength,
 		}
-		if err := ctx.DB.Create(association).Error; err != nil {
+		if err := ctx.UserDB.Create(association).Error; err != nil {
 			results = append(results, fmt.Sprintf("- Connection to '%s' failed: %v", conn.To, err))
 			continue
 		}
 
 		// Create reverse for bidirectional types
 		if !isDirectionalTypeForRemember(assocType) {
-			reverseAssoc := &database.MedhaMemoryAssociation{
-				SourceMemoryID:  targetMem.ID,
-				TargetMemoryID:  sourceMem.ID,
+			reverseAssoc := &database.UserMemoryAssociation{
+				SourceSlug:      conn.To,
+				TargetSlug:      sourceSlug,
 				AssociationType: assocType,
 				Strength:        strength,
 			}
-			ctx.DB.Create(reverseAssoc)
+			ctx.UserDB.Create(reverseAssoc)
 		}
 
 		results = append(results, fmt.Sprintf("- Connected to '%s' (%s)", conn.To, assocType))
@@ -607,4 +648,10 @@ func joinStrings(strs []string, sep string) string {
 		result += sep + strs[i]
 	}
 	return result
+}
+
+// computeContentHash computes a SHA256 hash of content for embedding staleness detection
+func computeContentHash(content string) string {
+	hash := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(hash[:])
 }

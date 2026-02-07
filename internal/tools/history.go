@@ -39,6 +39,7 @@ func NewHistoryTool() mcp.Tool {
 }
 
 // HistoryHandler handles the medha_history tool
+// Uses v2 architecture: UserDB for per-user memories
 func HistoryHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(c context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		slug := request.GetString("slug", "")
@@ -47,7 +48,12 @@ func HistoryHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Cal
 		sinceStr := request.GetString("since", "")
 		limit := int(request.GetFloat("limit", 10.0))
 
-		// Get user's repo
+		// Validate UserDB is available
+		if ctx.UserDB == nil {
+			return mcp.NewToolResultError("per-user database not available"), nil
+		}
+
+		// Get user's repo from system DB
 		var repo database.MedhaGitRepo
 		if err := ctx.DB.Where("user_id = ?", userID).First(&repo).Error; err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to get user repository: %v", err)), nil
@@ -66,14 +72,14 @@ func HistoryHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Cal
 
 		if slug != "" {
 			// History for specific memory
-			result, err := getMemoryHistory(ctx, gitRepo, userID, slug, sinceTime, showChanges, limit)
+			result, err := getMemoryHistoryV2(ctx, gitRepo, slug, sinceTime, showChanges, limit)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			output.WriteString(result)
 		} else if topic != "" {
 			// Search for memories matching topic and show combined history
-			result, err := getTopicHistory(ctx, gitRepo, userID, topic, sinceTime, showChanges, limit, repo.RepoPath)
+			result, err := getTopicHistoryV2(ctx, gitRepo, topic, sinceTime, showChanges, limit, repo.RepoPath)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
@@ -91,11 +97,11 @@ func HistoryHandler(ctx *ToolContext, userID uint) func(context.Context, mcp.Cal
 	}
 }
 
-// getMemoryHistory returns history for a specific memory
-func getMemoryHistory(ctx *ToolContext, gitRepo *git.Repository, userID uint, slug string, since time.Time, showChanges bool, limit int) (string, error) {
-	// Get memory
-	var mem database.MedhaMemory
-	if err := ctx.DB.Unscoped().Where("slug = ? AND user_id = ?", slug, userID).First(&mem).Error; err != nil {
+// getMemoryHistoryV2 returns history for a specific memory (v2 architecture)
+func getMemoryHistoryV2(ctx *ToolContext, gitRepo *git.Repository, slug string, since time.Time, showChanges bool, limit int) (string, error) {
+	// Get memory from UserDB
+	var mem database.UserMemory
+	if err := ctx.UserDB.Unscoped().Where("slug = ?", slug).First(&mem).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return "", fmt.Errorf("memory not found: %s", slug)
 		}
@@ -113,7 +119,8 @@ func getMemoryHistory(ctx *ToolContext, gitRepo *git.Repository, userID uint, sl
 	sb.WriteString(fmt.Sprintf("**Slug**: `%s`\n", mem.Slug))
 	sb.WriteString(fmt.Sprintf("**Created**: %s\n", mem.CreatedAt.Format("2006-01-02 15:04")))
 	sb.WriteString(fmt.Sprintf("**Last Updated**: %s\n", mem.UpdatedAt.Format("2006-01-02 15:04")))
-	sb.WriteString(fmt.Sprintf("**Access Count**: %d\n\n", mem.AccessCount))
+	sb.WriteString(fmt.Sprintf("**Access Count**: %d\n", mem.AccessCount))
+	sb.WriteString(fmt.Sprintf("**Version**: %d\n\n", mem.Version))
 
 	if mem.DeletedAt.Valid {
 		sb.WriteString("⚠️ **Status**: Archived\n\n")
@@ -151,11 +158,11 @@ func getMemoryHistory(ctx *ToolContext, gitRepo *git.Repository, userID uint, sl
 	return sb.String(), nil
 }
 
-// getTopicHistory returns history for memories matching a topic
-func getTopicHistory(ctx *ToolContext, gitRepo *git.Repository, userID uint, topic string, since time.Time, showChanges bool, limit int, repoPath string) (string, error) {
-	// Find memories matching topic
-	var memories []database.MedhaMemory
-	ctx.DB.Where("user_id = ? AND title LIKE ?", userID, "%"+topic+"%").Find(&memories)
+// getTopicHistoryV2 returns history for memories matching a topic (v2 architecture)
+func getTopicHistoryV2(ctx *ToolContext, gitRepo *git.Repository, topic string, since time.Time, showChanges bool, limit int, repoPath string) (string, error) {
+	// Find memories matching topic from UserDB
+	var memories []database.UserMemory
+	ctx.UserDB.Where("title LIKE ?", "%"+topic+"%").Find(&memories)
 
 	if len(memories) == 0 {
 		return fmt.Sprintf("No memories found matching topic: '%s'", topic), nil
@@ -167,9 +174,10 @@ func getTopicHistory(ctx *ToolContext, gitRepo *git.Repository, userID uint, top
 
 	for _, mem := range memories {
 		sb.WriteString(fmt.Sprintf("## %s (`%s`)\n", mem.Title, mem.Slug))
-		sb.WriteString(fmt.Sprintf("Created: %s | Updated: %s\n\n", 
+		sb.WriteString(fmt.Sprintf("Created: %s | Updated: %s | Version: %d\n\n", 
 			mem.CreatedAt.Format("2006-01-02"),
-			mem.UpdatedAt.Format("2006-01-02")))
+			mem.UpdatedAt.Format("2006-01-02"),
+			mem.Version))
 
 		// Get recent commits for this memory
 		commits, err := gitRepo.SearchCommits("", mem.FilePath, since, time.Time{}, 3)

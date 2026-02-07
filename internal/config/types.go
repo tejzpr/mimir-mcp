@@ -6,12 +6,13 @@ package config
 
 // Config represents the complete application configuration
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Auth     AuthConfig     `mapstructure:"auth"`
-	SAML     SAMLConfig     `mapstructure:"saml"`
-	Git      GitConfig      `mapstructure:"git"`
-	Security SecurityConfig `mapstructure:"security"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	Auth       AuthConfig       `mapstructure:"auth"`
+	SAML       SAMLConfig       `mapstructure:"saml"`
+	Git        GitConfig        `mapstructure:"git"`
+	Security   SecurityConfig   `mapstructure:"security"`
+	Embeddings EmbeddingConfig  `mapstructure:"embeddings"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -58,4 +59,42 @@ type GitConfig struct {
 type SecurityConfig struct {
 	EncryptionKey string `mapstructure:"encryption_key"` // For PAT encryption
 	TokenTTL      int    `mapstructure:"token_ttl_hours"`
+}
+
+// EmbeddingConfig holds configuration for semantic search embeddings
+type EmbeddingConfig struct {
+	Enabled    bool   `mapstructure:"enabled"`              // Feature flag for embeddings
+	Provider   string `mapstructure:"provider"`             // "openai", "azure", "local"
+	BaseURL    string `mapstructure:"base_url"`             // API base URL
+	Model      string `mapstructure:"model"`                // Model name (e.g., "text-embedding-3-small")
+	APIKeyEnv  string `mapstructure:"api_key_env"`          // Environment variable name for API key
+	Dimensions int    `mapstructure:"dimensions"`           // Vector dimensions (e.g., 1536)
+	LazyIndex  bool   `mapstructure:"lazy_index"`           // Enable lazy indexing on first access
+	BatchSize  int    `mapstructure:"batch_size"`           // Batch size for bulk embedding operations
+}
+
+// EmbeddingProviders defines valid embedding providers
+const (
+	EmbeddingProviderOpenAI = "openai"
+	EmbeddingProviderAzure  = "azure"
+	EmbeddingProviderLocal  = "local"
+)
+
+// ValidEmbeddingProviders returns all valid embedding provider values
+func ValidEmbeddingProviders() []string {
+	return []string{
+		EmbeddingProviderOpenAI,
+		EmbeddingProviderAzure,
+		EmbeddingProviderLocal,
+	}
+}
+
+// IsValidEmbeddingProvider checks if a provider is valid
+func IsValidEmbeddingProvider(provider string) bool {
+	for _, valid := range ValidEmbeddingProviders() {
+		if provider == valid {
+			return true
+		}
+	}
+	return false
 }

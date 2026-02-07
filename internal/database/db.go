@@ -5,15 +5,23 @@
 package database
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/glebarez/sqlite" // GORM driver using modernc.org/sqlite (pure-Go, no CGO)
+	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
+	_ "github.com/mattn/go-sqlite3" // CGO-based SQLite driver for sqlite-vec support
 	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+func init() {
+	// Register sqlite-vec extension with mattn/go-sqlite3
+	sqlite_vec.Auto()
+}
 
 // Config holds database configuration
 type Config struct {
@@ -37,6 +45,7 @@ func Connect(cfg *Config) (*gorm.DB, error) {
 		if err := ensureSQLiteDir(cfg.SQLitePath); err != nil {
 			return nil, fmt.Errorf("failed to ensure sqlite directory: %w", err)
 		}
+		// Use CGO-based sqlite driver for sqlite-vec support
 		db, err = gorm.Open(sqlite.Open(cfg.SQLitePath), gormConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to sqlite: %w", err)
@@ -53,6 +62,45 @@ func Connect(cfg *Config) (*gorm.DB, error) {
 	}
 
 	return db, nil
+}
+
+// ConnectSQLiteWithVec opens a SQLite database with sqlite-vec extension enabled
+// This is the preferred method for opening databases that need vector search
+func ConnectSQLiteWithVec(dbPath string, logLevel logger.LogLevel) (*gorm.DB, error) {
+	if err := ensureSQLiteDir(dbPath); err != nil {
+		return nil, fmt.Errorf("failed to ensure sqlite directory: %w", err)
+	}
+
+	gormConfig := &gorm.Config{
+		Logger: logger.Default.LogMode(logLevel),
+	}
+
+	db, err := gorm.Open(sqlite.Open(dbPath), gormConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to sqlite: %w", err)
+	}
+
+	// Verify sqlite-vec is available
+	var version string
+	if err := db.Raw("SELECT vec_version()").Scan(&version).Error; err != nil {
+		return nil, fmt.Errorf("sqlite-vec extension not available: %w", err)
+	}
+
+	return db, nil
+}
+
+// GetSQLiteVecVersion returns the version of the sqlite-vec extension
+func GetSQLiteVecVersion(db *gorm.DB) (string, error) {
+	var version string
+	err := db.Raw("SELECT vec_version()").Scan(&version).Error
+	return version, err
+}
+
+// IsVecAvailable checks if sqlite-vec extension is available
+func IsVecAvailable(db *gorm.DB) bool {
+	var version string
+	err := db.Raw("SELECT vec_version()").Scan(&version).Error
+	return err == nil && version != ""
 }
 
 // ensureSQLiteDir creates the directory for the SQLite database if it doesn't exist
@@ -80,4 +128,9 @@ func Ping(db *gorm.DB) error {
 		return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 	}
 	return sqlDB.Ping()
+}
+
+// GetSqlDB returns the underlying sql.DB for raw operations
+func GetSqlDB(db *gorm.DB) (*sql.DB, error) {
+	return db.DB()
 }

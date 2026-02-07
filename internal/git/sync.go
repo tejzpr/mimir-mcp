@@ -273,3 +273,138 @@ func (r *Repository) resolveConflictsLastWriteWins() error {
 
 	return r.AddAndCommit([]string{"."}, opts)
 }
+
+// SyncV2Options configures the v2 sync operation
+type SyncV2Options struct {
+	PAT               string
+	ForceLastWriteWins bool
+	IncludePerUserDB  bool
+	OnBeforeSync      func() error // Called before sync (close DB)
+	OnAfterSync       func() error // Called after sync (reopen DB)
+}
+
+// SyncV2 performs a full sync with support for per-user database
+// This is the v2 sync that includes the .medha/medha.db in git operations
+func (r *Repository) SyncV2(opts SyncV2Options) (*SyncStatus, error) {
+	status := &SyncStatus{
+		LastSync:       time.Now(),
+		SyncSuccessful: false,
+	}
+
+	// First, check if we have a remote
+	if !r.HasRemote("origin") {
+		status.SyncSuccessful = true
+		status.Error = "No remote configured, skipping sync"
+		return status, nil
+	}
+
+	// Call before sync hook (close DB)
+	if opts.OnBeforeSync != nil {
+		if err := opts.OnBeforeSync(); err != nil {
+			status.Error = fmt.Sprintf("pre-sync hook failed: %v", err)
+			return status, fmt.Errorf("pre-sync hook failed: %w", err)
+		}
+	}
+
+	// Stage the per-user database if requested
+	if opts.IncludePerUserDB {
+		if err := r.StagePerUserDB(); err != nil {
+			// Not a fatal error if file doesn't exist
+			if err.Error() != "no changes to stage" {
+				status.Error = fmt.Sprintf("failed to stage per-user DB: %v", err)
+			}
+		}
+	}
+
+	// Fetch first to check for conflicts
+	err := r.Fetch(opts.PAT)
+	if err != nil {
+		status.Error = fmt.Sprintf("fetch failed: %v", err)
+		if opts.OnAfterSync != nil {
+			opts.OnAfterSync() //nolint:errcheck
+		}
+		return status, fmt.Errorf("fetch failed: %w", err)
+	}
+
+	// Try to pull
+	err = r.Pull(opts.PAT)
+	if err != nil {
+		if isConflictError(err) {
+			status.HasConflicts = true
+			
+			if opts.ForceLastWriteWins {
+				err = r.resolveConflictsLastWriteWins()
+				if err != nil {
+					status.Error = fmt.Sprintf("conflict resolution failed: %v", err)
+					if opts.OnAfterSync != nil {
+						opts.OnAfterSync() //nolint:errcheck
+					}
+					return status, fmt.Errorf("conflict resolution failed: %w", err)
+				}
+			} else {
+				status.Error = "merge conflicts detected, manual resolution required"
+				if opts.OnAfterSync != nil {
+					opts.OnAfterSync() //nolint:errcheck
+				}
+				return status, fmt.Errorf("merge conflicts detected")
+			}
+		} else {
+			status.Error = fmt.Sprintf("pull failed: %v", err)
+			if opts.OnAfterSync != nil {
+				opts.OnAfterSync() //nolint:errcheck
+			}
+			return status, fmt.Errorf("pull failed: %w", err)
+		}
+	}
+
+	// Push our changes
+	err = r.Push(opts.PAT)
+	if err != nil {
+		status.Error = fmt.Sprintf("push failed: %v", err)
+		if opts.OnAfterSync != nil {
+			opts.OnAfterSync() //nolint:errcheck
+		}
+		return status, fmt.Errorf("push failed: %w", err)
+	}
+
+	// Call after sync hook (reopen DB)
+	if opts.OnAfterSync != nil {
+		if err := opts.OnAfterSync(); err != nil {
+			status.SyncSuccessful = true
+			status.Error = fmt.Sprintf("post-sync hook failed (sync was successful): %v", err)
+			return status, nil
+		}
+	}
+
+	status.SyncSuccessful = true
+	return status, nil
+}
+
+// StagePerUserDB stages the per-user database file for commit
+func (r *Repository) StagePerUserDB() error {
+	worktree, err := r.repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	dbPath := ".medha/medha.db"
+	_, err = worktree.Add(dbPath)
+	if err != nil {
+		// Check if it's just because the file doesn't exist
+		return fmt.Errorf("failed to stage per-user DB: %w", err)
+	}
+
+	return nil
+}
+
+// HasPerUserDB checks if the per-user database exists in the repository
+func (r *Repository) HasPerUserDB() bool {
+	worktree, err := r.repo.Worktree()
+	if err != nil {
+		return false
+	}
+
+	fs := worktree.Filesystem
+	_, err = fs.Stat(".medha/medha.db")
+	return err == nil
+}

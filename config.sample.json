@@ -32,5 +32,15 @@
   "security": {
     "encryption_key": "",
     "token_ttl_hours": 24
+  },
+  "embeddings": {
+    "enabled": false,
+    "provider": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "model": "text-embedding-3-small",
+    "api_key_env": "OPENAI_API_KEY",
+    "dimensions": 1536,
+    "lazy_index": true,
+    "batch_size": 100
   }
 }
