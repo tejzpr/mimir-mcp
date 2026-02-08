@@ -216,4 +216,4 @@ jobs:
           -e CGO_ENABLED=1 \
           -e GORELEASER_CURRENT_TAG=${{ github.ref_name }} \
           ghcr.io/goreleaser/goreleaser-cross:v1.25.6 \
-          goreleaser release --clean
+          release --clean
