@@ -1,9 +1,10 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.24-bookworm AS builder
 
-# Install git for go-git operations, ca-certificates, and CGO build dependencies
-# gcc and musl-dev are required for CGO (sqlite-vec uses CGO)
-RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
+# Install git, ca-certificates, CGO build deps, and SQLite dev (sqlite-vec)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates tzdata gcc libc6-dev libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -15,18 +16,18 @@ RUN go mod download
 COPY . .
 
 # Build with CGO enabled for sqlite-vec support
-# Using -ldflags to reduce binary size (strip debug info and symbol table)
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o /medha cmd/server/main.go
 
 # Runtime stage
-FROM alpine:3.19
+FROM debian:bookworm-slim
 
-# Install git (required at runtime for go-git operations), ca-certificates,
-# and libgcc for CGO-linked binaries
-RUN apk add --no-cache git ca-certificates tzdata libgcc
+# Install git (runtime), ca-certificates, tzdata, libgcc for CGO binary, wget for healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates tzdata libgcc-s1 wget \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN adduser -D -u 1000 medha
+RUN adduser --disabled-password --gecos '' --uid 1000 medha
 
 # Create data directories
 RUN mkdir -p /home/medha/.medha/configs \

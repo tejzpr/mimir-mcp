@@ -1,0 +1,95 @@
+# Goreleaser config for CGO cross-compilation with goreleaser-cross
+# Requires goreleaser-cross Docker image and linux/arm64 sysroot with SQLite
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: linux-amd64
+    main: ./cmd/server
+    binary: medha
+    goos: [linux]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-linux-gnu-gcc
+      - CXX=x86_64-linux-gnu-g++
+    flags: [-mod=readonly]
+    ldflags: [-s -w -X main.Version={{.Version}}]
+
+  - id: linux-arm64
+    main: ./cmd/server
+    binary: medha
+    goos: [linux]
+    goarch: [arm64]
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+      - CXX=aarch64-linux-gnu-g++
+      - PKG_CONFIG_SYSROOT_DIR=/sysroot/linux/arm64
+      - CGO_CFLAGS=--sysroot=/sysroot/linux/arm64
+      - CGO_LDFLAGS=--sysroot=/sysroot/linux/arm64
+    flags: [-mod=readonly]
+    ldflags: [-s -w -X main.Version={{.Version}}]
+
+  - id: darwin-amd64
+    main: ./cmd/server
+    binary: medha
+    goos: [darwin]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+      - CC=o64-clang
+      - CXX=o64-clang++
+    flags: [-mod=readonly]
+    ldflags: [-s -w -X main.Version={{.Version}}]
+
+  - id: darwin-arm64
+    main: ./cmd/server
+    binary: medha
+    goos: [darwin]
+    goarch: [arm64]
+    env:
+      - CGO_ENABLED=1
+      - CC=oa64-clang
+      - CXX=oa64-clang++
+    flags: [-mod=readonly]
+    ldflags: [-s -w -X main.Version={{.Version}}]
+
+  - id: windows-amd64
+    main: ./cmd/server
+    binary: medha
+    goos: [windows]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-w64-mingw32-gcc
+      - CXX=x86_64-w64-mingw32-g++
+    flags: [-mod=readonly]
+    ldflags: [-s -w -X main.Version={{.Version}}]
+
+archives:
+  - id: default
+    builds:
+      - linux-amd64
+      - linux-arm64
+      - darwin-amd64
+      - darwin-arm64
+      - windows-amd64
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    wrap_in_directory: true
+
+universal_binaries:
+  - ids: [darwin-amd64, darwin-arm64]
+    replace: true
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  draft: false

@@ -25,6 +25,9 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// Version is set at build time via ldflags (e.g. goreleaser -X main.Version={{.Version}}).
+var Version string
+
 func main() {
 	// CRITICAL: MCP servers must ONLY output JSON-RPC to stdout
 	// Redirect all logging to stderr

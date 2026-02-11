@@ -269,7 +269,7 @@ func (s *SemanticSearch) HybridSearch(query string, keywordMatches []string, lim
 	}
 
 	// If no semantic results, just return keyword matches as results with default similarity
-	if semanticResults == nil || len(semanticResults) == 0 {
+	if len(semanticResults) == 0 {
 		results := make([]SearchResult, 0, len(keywordMatches))
 		for _, slug := range keywordMatches {
 			results = append(results, SearchResult{
