@@ -89,12 +89,17 @@ func ValidEmbeddingProviders() []string {
 	}
 }
 
-// IsValidEmbeddingProvider checks if a provider is valid
-func IsValidEmbeddingProvider(provider string) bool {
-	for _, valid := range ValidEmbeddingProviders() {
-		if provider == valid {
+// isValidType is a generic helper to check if a type is in a list of valid types
+func isValidType(aType string, validTypes []string) bool {
+	for _, valid := range validTypes {
+		if aType == valid {
 			return true
 		}
 	}
 	return false
+}
+
+// IsValidEmbeddingProvider checks if a provider is valid
+func IsValidEmbeddingProvider(provider string) bool {
+	return isValidType(provider, ValidEmbeddingProviders())
 }

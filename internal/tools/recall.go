@@ -6,8 +6,6 @@ package tools
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -526,11 +524,4 @@ func formatRecallResultsV2(results []RecallResult) string {
 	}
 
 	return sb.String()
-}
-
-// calculateContentHash computes a SHA256 hash of content for embedding staleness detection
-//nolint:unused // reserved for future use
-func calculateContentHash(content string) string {
-	hash := sha256.Sum256([]byte(content))
-	return hex.EncodeToString(hash[:])
 }

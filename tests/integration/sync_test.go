@@ -122,7 +122,8 @@ func TestSync_SyncV2Options_Hooks(t *testing.T) {
 	}
 
 	// Sync (will skip due to no remote, but hooks should be called)
-	status, _ := repo.SyncV2(opts)
+	status, err := repo.SyncV2(opts)
+	assert.NoError(t, err)
 
 	// Should succeed (no remote = skip)
 	assert.True(t, status.SyncSuccessful)

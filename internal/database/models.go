@@ -172,14 +172,19 @@ func ValidAnnotationTypes() []string {
 	}
 }
 
-// IsValidAnnotationType checks if an annotation type is valid
-func IsValidAnnotationType(aType string) bool {
-	for _, valid := range ValidAnnotationTypes() {
+// isValidType is a generic helper to check if a type is in a list of valid types
+func isValidType(aType string, validTypes []string) bool {
+	for _, valid := range validTypes {
 		if aType == valid {
 			return true
 		}
 	}
 	return false
+}
+
+// IsValidAnnotationType checks if an annotation type is valid
+func IsValidAnnotationType(aType string) bool {
+	return isValidType(aType, ValidAnnotationTypes())
 }
 
 // AssociationType constants for memory associations
@@ -210,10 +215,18 @@ func ValidAssociationTypes() []string {
 
 // IsValidAssociationType checks if an association type is valid
 func IsValidAssociationType(aType string) bool {
-	for _, valid := range ValidAssociationTypes() {
-		if aType == valid {
-			return true
-		}
+	return isValidType(aType, ValidAssociationTypes())
+}
+
+// IsDirectionalType returns true for relationship types that should not be bidirectional
+func IsDirectionalType(assocType string) bool {
+	switch assocType {
+	case AssociationTypeFollows,
+		AssociationTypePrecedes,
+		AssociationTypeSupersedes,
+		AssociationTypePartOf:
+		return true
+	default:
+		return false
 	}
-	return false
 }
