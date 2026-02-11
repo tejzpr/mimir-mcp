@@ -582,7 +582,7 @@ func handleConnectionsV2(ctx *ToolContext, sourceSlug string, connections []Conn
 		}
 
 		// Create reverse for bidirectional types
-		if !isDirectionalTypeForRemember(assocType) {
+		if !database.IsDirectionalType(assocType) {
 			reverseAssoc := &database.UserMemoryAssociation{
 				SourceSlug:      conn.To,
 				TargetSlug:      sourceSlug,
@@ -625,18 +625,6 @@ func mapRelationshipTypeForRemember(relationship string) string {
 	}
 }
 
-// isDirectionalTypeForRemember returns true for relationship types that should not be bidirectional
-func isDirectionalTypeForRemember(assocType string) bool {
-	switch assocType {
-	case database.AssociationTypeFollows,
-		database.AssociationTypePrecedes,
-		database.AssociationTypeSupersedes,
-		database.AssociationTypePartOf:
-		return true
-	default:
-		return false
-	}
-}
 
 // joinStrings joins strings with a separator
 func joinStrings(strs []string, sep string) string {

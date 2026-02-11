@@ -112,22 +112,27 @@ func ensureSQLiteDir(dbPath string) error {
 	return nil
 }
 
-// Close closes the database connection
-func Close(db *gorm.DB) error {
-	sqlDB, err := db.DB()
+// withSqlDB is a helper that gets the underlying sql.DB and executes an operation on it
+func withSqlDB(db *gorm.DB, operation func(*sql.DB) error) error {
+	sqlDB, err := GetSqlDB(db)
 	if err != nil {
 		return fmt.Errorf("failed to get underlying sql.DB: %w", err)
 	}
-	return sqlDB.Close()
+	return operation(sqlDB)
+}
+
+// Close closes the database connection
+func Close(db *gorm.DB) error {
+	return withSqlDB(db, func(sqlDB *sql.DB) error {
+		return sqlDB.Close()
+	})
 }
 
 // Ping checks if the database connection is alive
 func Ping(db *gorm.DB) error {
-	sqlDB, err := db.DB()
-	if err != nil {
-		return fmt.Errorf("failed to get underlying sql.DB: %w", err)
-	}
-	return sqlDB.Ping()
+	return withSqlDB(db, func(sqlDB *sql.DB) error {
+		return sqlDB.Ping()
+	})
 }
 
 // GetSqlDB returns the underlying sql.DB for raw operations

@@ -124,7 +124,7 @@ func handleConnectV2(ctx *ToolContext, fromMem, toMem *database.UserMemory, asso
 	}
 
 	// Create reverse association (bidirectional) for non-directional types
-	if !isDirectionalType(assocType) {
+	if !database.IsDirectionalType(assocType) {
 		reverseAssoc := &database.UserMemoryAssociation{
 			SourceSlug:      toMem.Slug,
 			TargetSlug:      fromMem.Slug,
@@ -279,15 +279,3 @@ func mapRelationshipType(relationship string) string {
 	}
 }
 
-// isDirectionalType returns true for relationship types that should not be bidirectional
-func isDirectionalType(assocType string) bool {
-	switch assocType {
-	case database.AssociationTypeFollows,
-		database.AssociationTypePrecedes,
-		database.AssociationTypeSupersedes,
-		database.AssociationTypePartOf:
-		return true
-	default:
-		return false
-	}
-}

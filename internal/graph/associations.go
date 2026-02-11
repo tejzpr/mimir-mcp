@@ -48,24 +48,24 @@ func (m *Manager) GetAssociations(memoryID uint) ([]database.MedhaMemoryAssociat
 	return associations, nil
 }
 
-// GetOutgoingAssociations retrieves associations where the memory is the source
-func (m *Manager) GetOutgoingAssociations(memoryID uint) ([]database.MedhaMemoryAssociation, error) {
+// getAssociationsByField is a helper that retrieves associations by a specific field
+func (m *Manager) getAssociationsByField(field string, memoryID uint, errorMsg string) ([]database.MedhaMemoryAssociation, error) {
 	var associations []database.MedhaMemoryAssociation
-	err := m.db.Where("source_memory_id = ?", memoryID).Find(&associations).Error
+	err := m.db.Where(field+" = ?", memoryID).Find(&associations).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to get outgoing associations: %w", err)
+		return nil, fmt.Errorf("%s: %w", errorMsg, err)
 	}
 	return associations, nil
 }
 
+// GetOutgoingAssociations retrieves associations where the memory is the source
+func (m *Manager) GetOutgoingAssociations(memoryID uint) ([]database.MedhaMemoryAssociation, error) {
+	return m.getAssociationsByField("source_memory_id", memoryID, "failed to get outgoing associations")
+}
+
 // GetIncomingAssociations retrieves associations where the memory is the target
 func (m *Manager) GetIncomingAssociations(memoryID uint) ([]database.MedhaMemoryAssociation, error) {
-	var associations []database.MedhaMemoryAssociation
-	err := m.db.Where("target_memory_id = ?", memoryID).Find(&associations).Error
-	if err != nil {
-		return nil, fmt.Errorf("failed to get incoming associations: %w", err)
-	}
-	return associations, nil
+	return m.getAssociationsByField("target_memory_id", memoryID, "failed to get incoming associations")
 }
 
 // DeleteAssociation deletes an association
