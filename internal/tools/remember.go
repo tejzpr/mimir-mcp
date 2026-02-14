@@ -41,6 +41,7 @@ func NewRememberTool() mcp.Tool {
 		),
 		mcp.WithArray("tags",
 			mcp.Description("Labels for organization"),
+			mcp.WithStringItems(),
 		),
 		mcp.WithString("path",
 			mcp.Description("Folder path. Example: 'projects/alpha/decisions'"),
@@ -50,6 +51,15 @@ func NewRememberTool() mcp.Tool {
 		),
 		mcp.WithArray("connections",
 			mcp.Description("Link to related memories. Array of objects: [{\"to\": \"slug\", \"relationship\": \"related|part_of|references|person\"}]"),
+			mcp.Items(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"to":           map[string]any{"type": "string", "description": "Slug of the related memory"},
+					"relationship": map[string]any{"type": "string", "description": "Type of connection: related, part_of, references, or person"},
+					"strength":     map[string]any{"type": "number", "description": "Relationship importance from 0.0 to 1.0"},
+				},
+				"required": []string{"to"},
+			}),
 		),
 	)
 }

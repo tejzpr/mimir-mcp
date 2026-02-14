@@ -1,37 +1,22 @@
 # Medha MCP Instructions
 
-Git-backed AI memory system. **Recall before answering, store after solving.**
+Git-backed AI memory. **Recall before answering, store after solving.**
 
 ## Tools
 
-| Tool | Intent |
-|------|--------|
-| `medha_recall` | Find stored information (use `topic`, `exact`, or `list_all`) |
-| `medha_remember` | Create/update memories (requires `title`, `content`) |
-| `medha_history` | View changes over time |
-| `medha_connect` | Link related memories |
-| `medha_forget` | Archive outdated info |
-| `medha_restore` | Undelete archived memories |
-| `medha_sync` | Manual git sync |
+| Tool | Use |
+|------|-----|
+| `medha_recall` | Find info (`topic`, `exact`, `list_all`, `path`) |
+| `medha_remember` | Create/update (`title`+`content` required; `slug`, `replaces`, `tags`, `path`, `note`, `connections` optional) |
+| `medha_history` | Timeline (`slug`/`topic`, `show_changes`, `since`: `7d`/`1w`/`1m`) |
+| `medha_connect` | Link (`from`+`to` required; `relationship`, `strength`, `disconnect`) |
+| `medha_forget` | Archive by `slug` (soft delete, restorable) |
+| `medha_restore` | Unarchive by `slug` |
+| `medha_sync` | Git push/pull (`force`) |
 
-## Key Behaviors
+## Rules
 
-1. **Check first** - Use `medha_recall` before answering questions
-2. **Store valuable info** - Decisions, solutions, context, action items
-3. **Supersede, don't duplicate** - Use `replaces` param when updating
-4. **Connect while storing** - Use `connections` param to link memories
-
-## Remember Params
-
-- `title`, `content` (required)
-- `tags`, `slug`, `path` (optional)
-- `replaces`: slug of memory being superseded
-- `connections`: `[{"to": "slug", "relationship": "type"}]`
-
-## Relationship Types
-
-`related` (default), `references`, `follows`, `supersedes`, `part_of`, `person`, `project`
-
-## Don't Store
-
-Credentials/secrets, or anything user doesn't want stored.
+1. **Recall first** — check `medha_recall` before answering
+2. **Supersede, don't duplicate** — use `replaces` param
+3. **Connect while storing** — use `connections`: `[{"to": "slug", "relationship": "related|references|follows|supersedes|part_of|person|project"}]`
+4. **Never store** credentials/secrets
